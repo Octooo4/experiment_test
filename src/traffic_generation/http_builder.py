@@ -665,6 +665,19 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
 
     strategy = classify_http_rule_strategy(rule.body.clauses)
 
+    if strategy == "recoverable_raw":
+        req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
+        ensure_common_headers(server, req)
+        return strategy, req, None
+
+    if strategy == "raw_text":
+        raw_bytes = build_raw_http_text_request_from_clauses(
+            rule.body.clauses,
+            sid=rule.body.sid,
+            server=server,
+        )
+        return strategy, None, raw_bytes
+
     buckets = split_clauses_for_http_generation(rule.body.clauses)
     if buckets.get("_mapping_suspect"):
         return "BUFFER_MAPPING_SUSPECT", None, None
