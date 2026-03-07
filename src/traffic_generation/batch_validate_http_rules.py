@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -232,6 +233,23 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
     }
 
 
+
+
+def normalize_rule_for_suricata_eval(rule_text: str) -> str:
+    """
+    归一化 rule header，避免对 HOME_NET/EXTERNAL_NET/HTTP_PORTS 变量配置强依赖。
+    仅用于离线回放验证，不改动 options。
+    """
+    text = (rule_text or "").strip()
+    m = re.match(r"^\s*(alert|pass|drop|reject|log)\s+(\S+)\s+\S+\s+\S+\s+(->|<>)\s+\S+\s+\S+\s*\(", text, flags=re.IGNORECASE)
+    if not m:
+        return text
+    action = m.group(1)
+    protocol = m.group(2)
+    direction = m.group(3)
+    normalized = f"{action} {protocol} any any {direction} any any ("
+    return normalized + text[m.end():]
+
 def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     sid_dir = root / f"{sid}_{index:05d}"
     sid_dir.mkdir(parents=True, exist_ok=True)
@@ -258,7 +276,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     eve_path = sid_dir / "eve.json"
     diagnose_path = sid_dir / "diagnose.json"
 
-    rule_path.write_text(rule_ast.raw_text.strip() + "\n", encoding="utf-8")
+    normalized_rule_text = normalize_rule_for_suricata_eval(rule_ast.raw_text)
+    rule_path.write_text(normalized_rule_text.strip() + "\n", encoding="utf-8")
 
     plan = build_rule_plan(rule, rule_ast)
     write_json(plan_path, plan)
