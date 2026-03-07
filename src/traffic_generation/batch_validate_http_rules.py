@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import random
 import shutil
 import subprocess
@@ -9,8 +8,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from parsuricata import parse_rules
-from parse.parsuricata_adapter import rule_to_suricata_rule
+from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
 
 from traffic_generation.http_fixed import (
     send_http_request,
@@ -84,13 +82,6 @@ def safe_sid(raw_sid: str) -> str:
     return sid if sid else "NO_SID"
 
 
-def rough_extract_sid(rule_text: str) -> str:
-    m = re.search(r"\bsid\s*:\s*(\d+)\s*;", rule_text, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return "NO_SID"
-
-
 def extract_rule_feature_summary(rule) -> dict:
     clauses = list(getattr(rule.body, "clauses", []) or [])
     by_type = {
@@ -135,13 +126,8 @@ def extract_rule_feature_summary(rule) -> dict:
     }
 
 
-def build_request_from_rule_text(rule_text: str):
-    rules = parse_rules(rule_text)
-    if not rules:
-        raise ValueError("parse_rules returned empty")
-
-    rule_original = rules[0]
-    rule = rule_to_suricata_rule(rule_original)
+def build_request_from_rule_ast(rule_ast: Rule):
+    rule = ast_to_suricata_rule(rule_ast)
     sid = safe_sid(rule.body.sid)
 
     strategy, req, raw_bytes, synthetic_resp = build_transaction_artifacts_for_rule(rule, TARGET_SERVER)
@@ -312,7 +298,7 @@ def save_failed_artifacts(sid: str, rule_text: str, pcap_path: Optional[Path], r
     append_failed_sid(sid, reason)
 
 
-def process_one_rule(rule_text: str, index: int, total: int) -> None:
+def process_one_rule(rule_text: str, rule_ast: Rule, index: int, total: int) -> None:
     global SUCCESS_COUNT, FAIL_COUNT
 
     if not rule_text.strip():
@@ -322,11 +308,11 @@ def process_one_rule(rule_text: str, index: int, total: int) -> None:
     capture_proc: Optional[subprocess.Popen] = None
     t0 = time.time()
 
-    sid = rough_extract_sid(rule_text)
+    sid = safe_sid(rule_ast.sid)
 
     try:
         console(f"[{index}/{total}] sid={sid} parsing/building request...")
-        rule, strategy, req, raw_bytes, synthetic_resp = build_request_from_rule_text(rule_text)
+        rule, strategy, req, raw_bytes, synthetic_resp = build_request_from_rule_ast(rule_ast)
         rule_features = extract_rule_feature_summary(rule)
         sid = safe_sid(rule.body.sid)
 
@@ -483,13 +469,11 @@ def main() -> None:
     if not SURICATA_YAML.exists():
         raise FileNotFoundError(f"suricata yaml not found: {SURICATA_YAML}")
 
-    lines = DATASET_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()
-
+    parsed_rules = parse_rules(DATASET_PATH)
     indexed_rules = []
-    for line_no, line in enumerate(lines, start=1):
-        rule_text = line.strip()
-        if rule_text:
-            indexed_rules.append((line_no, rule_text))
+    for line_no, rule_ast in enumerate(parsed_rules, start=1):
+        rule_text = rule_ast.raw_text
+        indexed_rules.append((line_no, rule_text, rule_ast))
 
     if not indexed_rules:
         raise ValueError("No valid rules found in dataset")
@@ -501,10 +485,10 @@ def main() -> None:
     console(f"Starting batch validation. total={total}")
 
     count = 0
-    for idx, (line_no, rule_text) in enumerate(selected_rules, start=1):
+    for idx, (line_no, rule_text, rule_ast) in enumerate(selected_rules, start=1):
         console("=" * 80)
         console(f"[{idx}/{total}] source line={line_no}")
-        process_one_rule(rule_text, idx, total)
+        process_one_rule(rule_text, rule_ast, idx, total)
         count += 1
 
         if idx % 10 == 0:
