@@ -189,6 +189,16 @@ def build_stream_from_contents(contents: List[ContentMatch], fill: str = "A") ->
     return s, prev_end
 
 
+def _strip_negated_contents(text: str, clauses: List[object]) -> str:
+    out = text
+    for c in clauses:
+        if isinstance(c, ContentMatch) and getattr(c, "negated", False):
+            token = getattr(c, "decoded", "") or getattr(c, "raw", "")
+            if token:
+                out = out.replace(token, "")
+    return out
+
+
 def sanitize_pcre(pcre: str, sid: str) -> str:
     s = pcre
     while "\\s" in s:
@@ -953,6 +963,7 @@ def synthesize_bucket_text(
                         s = _pad_to(s, need, fill)
 
     s = apply_bsize_constraints(s, clauses, fill=fill)
+    s = _strip_negated_contents(s, clauses)
 
     if strip_crlf:
         s = s.replace("\r", "").replace("\n", "")
@@ -1111,6 +1122,48 @@ def build_http_request_from_buckets(
         headers["Rulesid"] = str(sid)
 
     return HttpRequestSpec(method=method, path=path, headers=headers, body=body_str)
+
+def build_http_response_from_buckets(
+    buckets: Dict[str, Any],
+    sid: str = "",
+) -> bytes:
+    status_code = "200"
+    status_msg = "OK"
+
+    sc_text = synthesize_bucket_text(buckets.get("status_code", []), sid, fill="2", strip_crlf=True)
+    if sc_text:
+        m = re.search(r"(\d{3})", sc_text)
+        if m:
+            status_code = m.group(1)
+
+    sm_text = synthesize_bucket_text(buckets.get("status_msg", []), sid, fill="O", strip_crlf=True)
+    if sm_text:
+        status_msg = sm_text.strip() or status_msg
+
+    header_lines: List[str] = []
+    for c in buckets.get("header", []):
+        if isinstance(c, ContentMatch) and not getattr(c, "negated", False):
+            header_lines.append(getattr(c, "decoded", "") or getattr(c, "raw", ""))
+        elif PcreMatch is not None and isinstance(c, PcreMatch) and not getattr(c, "negated", False):
+            body_rx, _ = parse_pcre_raw(getattr(c, "raw", ""))
+            header_lines.append(generate_string_from_pcre(sanitize_pcre(body_rx, sid)))
+    headers = header_lines_to_dict(header_lines, sid=sid, lowercase_names=False)
+
+    body_text = synthesize_bucket_text(buckets.get("response_body", []), sid, fill="d", strip_crlf=False)
+    body_bytes = body_text.encode("latin-1", errors="replace")
+
+    if body_bytes and not has_header(headers, "Content-Length"):
+        set_header_case_insensitive(headers, "Content-Length", str(len(body_bytes)))
+    if not has_header(headers, "Content-Type"):
+        set_header_case_insensitive(headers, "Content-Type", "text/plain")
+
+    lines = [f"HTTP/1.1 {status_code} {status_msg}"]
+    for k, v in headers.items():
+        lines.append(f"{k}: {v}")
+    lines.append("")
+    head = "\r\n".join(lines).encode("latin-1", errors="replace") + b"\r\n"
+    return head + body_bytes
+
 
 def build_raw_http_text_request_from_clauses(
     clauses: List[object],
@@ -1338,6 +1391,26 @@ def build_request_for_rule(
         server=server,
     )
     return strategy, None, raw_bytes
+
+
+def build_transaction_artifacts_for_rule(
+    rule,
+    server: str,
+) -> Tuple[str, Optional[HttpRequestSpec], Optional[bytes], Optional[bytes]]:
+    """
+    返回 strategy, structured_req, raw_req_bytes, synthetic_resp_bytes
+    synthetic_resp_bytes 主要用于离线验证 to_client / response_body / file.data 规则。
+    """
+    strategy, req, raw_bytes = build_request_for_rule(rule, server)
+
+    synthetic_resp: Optional[bytes] = None
+    if strategy == "sticky":
+        buckets = split_clauses_for_http_generation(rule.body.clauses)
+        buckets = rebucket_pcre_by_flags(buckets)
+        if buckets.get("response_body") or buckets.get("status_code") or buckets.get("status_msg"):
+            synthetic_resp = build_http_response_from_buckets(buckets, sid=rule.body.sid)
+
+    return strategy, req, raw_bytes, synthetic_resp
 
 
 if __name__ == '__main__':

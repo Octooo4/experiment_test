@@ -141,6 +141,32 @@ STICKY_BUFFER_KEYWORDS = {
 }
 
 _INT_KEYS = {"offset", "depth", "distance", "within"}
+_LEGACY_BUFFER_MODIFIERS = {
+    "http_method": "http.method",
+    "http_uri": "http.uri",
+    "http_raw_uri": "http.uri.raw",
+    "http_request_line": "http.request_line",
+    "http_header": "http.header",
+    "http_raw_header": "http.header.raw",
+    "http_header_names": "http.header_names",
+    "http_host": "http.host",
+    "http_raw_host": "http.host.raw",
+    "http_user_agent": "http.user_agent",
+    "http_referer": "http.referer",
+    "http_raw_referer": "http.referer.raw",
+    "http_accept": "http.accept",
+    "http_accept_lang": "http.accept_lang",
+    "http_accept_enc": "http.accept_enc",
+    "http_connection": "http.connection",
+    "http_content_type": "http.content_type",
+    "http_content_len": "http.content_len",
+    "http_cookie": "http.cookie",
+    "http_raw_cookie": "http.cookie.raw",
+    "http_client_body": "http.request_body",
+    "http_request_body": "http.request_body",
+    "http_response_body": "http.response_body",
+    "file_data": "file.data",
+}
 
 def rule_to_suricata_rule(r: Any) -> SuricataRule:
     header = RuleHeader(
@@ -242,6 +268,14 @@ def rule_to_suricata_rule(r: Any) -> SuricataRule:
         if k == "endswith":
             if last_content is not None:
                 last_content.endswith = True
+            continue
+
+        if k in _LEGACY_BUFFER_MODIFIERS:
+            mapped = _LEGACY_BUFFER_MODIFIERS[k]
+            if last_mod_target == "content" and last_content is not None:
+                last_content.buffer = mapped
+            elif last_mod_target == "pcre" and last_pcre is not None:
+                last_pcre.buffer = mapped
             continue
 
         if k in _INT_KEYS and s_obj is not None and last_content is not None:

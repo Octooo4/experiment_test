@@ -37,8 +37,11 @@ TARGET_BUCKET_BY_BUFFER = {
     "http.request_body": "body",
 
     # response/file side，当前请求生成阶段只能尽量归类
-    "http.response_body": "body",
-    "file.data": "file",
+    "http.response_body": "response_body",
+    "http.stat_code": "status_code",
+    "http.stat_msg": "status_msg",
+    "http.response_line": "response_line",
+    "file.data": "response_body",
 }
 
 
@@ -80,19 +83,26 @@ def split_clauses_for_http_generation(clauses: List[Clause]) -> Dict[str, Any]:
         "content_length": [],
         "cookie": [],
         "body": [],
+        "response_body": [],
+        "status_code": [],
+        "status_msg": [],
+        "response_line": [],
         "file": [],
         "other": [],
         "_buffer_transforms": transforms_by_buf,
     }
 
     for buf, lst in per_buf.items():
-        target = TARGET_BUCKET_BY_BUFFER.get(buf)
-        if target is not None:
-            buckets[target].extend(lst)
-        elif buf == "pkt":
-            buckets["other"].extend(lst)
-        else:
-            buckets["other"].extend(lst)
+        for clause in lst:
+            clause_buf = getattr(clause, "buffer", None) if isinstance(clause, (ContentMatch, PcreMatch)) else None
+            effective_buf = clause_buf or buf
+            target = TARGET_BUCKET_BY_BUFFER.get(effective_buf)
+            if target is not None:
+                buckets[target].append(clause)
+            elif effective_buf == "pkt":
+                buckets["other"].append(clause)
+            else:
+                buckets["other"].append(clause)
 
     return buckets
 

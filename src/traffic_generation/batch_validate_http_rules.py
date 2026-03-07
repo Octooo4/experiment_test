@@ -16,7 +16,7 @@ from traffic_generation.http_fixed import (
     send_http_request,
     send_raw_http_bytes,
     render_http_request,
-    build_request_for_rule,
+    build_transaction_artifacts_for_rule,
 )
 
 # =========================
@@ -91,6 +91,50 @@ def rough_extract_sid(rule_text: str) -> str:
     return "NO_SID"
 
 
+def extract_rule_feature_summary(rule) -> dict:
+    clauses = list(getattr(rule.body, "clauses", []) or [])
+    by_type = {
+        "content": 0,
+        "pcre": 0,
+        "buffer_switch": 0,
+        "negated_content": 0,
+        "with_distance_or_within": 0,
+        "with_offset_or_depth": 0,
+    }
+    buffers = set()
+    for c in clauses:
+        name = c.__class__.__name__
+        if name == "ContentMatch":
+            by_type["content"] += 1
+            if getattr(c, "negated", False):
+                by_type["negated_content"] += 1
+            if getattr(c, "distance", None) is not None or getattr(c, "within", None) is not None:
+                by_type["with_distance_or_within"] += 1
+            if getattr(c, "offset", None) is not None or getattr(c, "depth", None) is not None:
+                by_type["with_offset_or_depth"] += 1
+            if getattr(c, "buffer", None):
+                buffers.add(getattr(c, "buffer"))
+        elif name == "PcreMatch":
+            by_type["pcre"] += 1
+            if getattr(c, "buffer", None):
+                buffers.add(getattr(c, "buffer"))
+        elif name == "BufferSwitch":
+            by_type["buffer_switch"] += 1
+            buffers.add(getattr(c, "buffer", ""))
+
+    flow = getattr(rule.body, "flow", None)
+    return {
+        "sid": getattr(rule.body, "sid", ""),
+        "flow": {
+            "to_server": bool(getattr(flow, "to_server", False)) if flow else False,
+            "to_client": bool(getattr(flow, "to_client", False)) if flow else False,
+            "established": bool(getattr(flow, "established", False)) if flow else False,
+        },
+        "counts": by_type,
+        "buffers": sorted(b for b in buffers if b),
+    }
+
+
 def build_request_from_rule_text(rule_text: str):
     rules = parse_rules(rule_text)
     if not rules:
@@ -100,7 +144,7 @@ def build_request_from_rule_text(rule_text: str):
     rule = rule_to_suricata_rule(rule_original)
     sid = safe_sid(rule.body.sid)
 
-    strategy, req, raw_bytes = build_request_for_rule(rule, TARGET_SERVER)
+    strategy, req, raw_bytes, synthetic_resp = build_transaction_artifacts_for_rule(rule, TARGET_SERVER)
 
     console(f"[{sid}] strategy={strategy}")
     console(f"[{sid}] clause_count={len(rule.body.clauses)}")
@@ -116,7 +160,7 @@ def build_request_from_rule_text(rule_text: str):
             raise ValueError(f"{sid}: strategy=raw_text but raw_bytes is None")
         console(raw_bytes.decode("latin-1", errors="replace"))
 
-    return rule, strategy, req, raw_bytes
+    return rule, strategy, req, raw_bytes, synthetic_resp
 
 
 def start_capture(pcap_path: Path) -> subprocess.Popen:
@@ -282,8 +326,11 @@ def process_one_rule(rule_text: str, index: int, total: int) -> None:
 
     try:
         console(f"[{index}/{total}] sid={sid} parsing/building request...")
-        rule, strategy, req, raw_bytes = build_request_from_rule_text(rule_text)
+        rule, strategy, req, raw_bytes, synthetic_resp = build_request_from_rule_text(rule_text)
+        rule_features = extract_rule_feature_summary(rule)
         sid = safe_sid(rule.body.sid)
+
+        console(f"[{index}/{total}] sid={sid} rule_features={rule_features}")
 
         if req is not None:
             console(f"[{index}/{total}] sid={sid} built request detail:")
@@ -312,6 +359,8 @@ def process_one_rule(rule_text: str, index: int, total: int) -> None:
         capture_proc = start_capture(temp_pcap_path)
 
         console(f"[{index}/{total}] sid={sid} sending request...")
+        console(f"[{index}/{total}] sid={sid} rule_features={rule_features}")
+
         if req is not None:
             status, _ = send_http_request(TARGET_SERVER, req, timeout=REQUEST_TIMEOUT)
         else:
@@ -347,6 +396,11 @@ def process_one_rule(rule_text: str, index: int, total: int) -> None:
                 raw_bytes.decode("latin-1", errors="replace")
                 if raw_bytes is not None else None
             ),
+            "synthetic_response_preview": (
+                synthetic_resp.decode("latin-1", errors="replace")[:400]
+                if synthetic_resp is not None else None
+            ),
+            "rule_features": rule_features,
         })
 
         if hit:
