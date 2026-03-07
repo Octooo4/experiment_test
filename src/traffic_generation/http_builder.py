@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from core.models import ContentMatch
 from core.models import PcreMatch  # type: ignore
-from traffic_generation.buffer_solver import synthesize_bucket_text
+from traffic_generation.buffer_solver import synthesize_bucket_bytes, synthesize_bucket_text
 from traffic_generation.rule_parse import (
     generate_string_from_pcre,
     has_header,
@@ -50,6 +50,23 @@ BUFFER_TO_HEADER_KEYWORD = {
 }
 
 
+
+
+def _has_nonprintable_bytes(data: bytes) -> bool:
+    return any((b < 0x20 or b > 0x7E) for b in data)
+
+
+def _is_http_binary_unsafe(buckets: Dict[str, Any], sid: str) -> bool:
+    check_fields = (
+        ("http.uri", "uri"),
+        ("http.header", "header"),
+        ("http.request_line", "request_line"),
+    )
+    for _field, bucket in check_fields:
+        payload = synthesize_bucket_bytes(buckets.get(bucket, []), sid, fill=b"A", strip_crlf=False)
+        if payload and _has_nonprintable_bytes(payload):
+            return True
+    return False
 class HttpRequestSpec(BaseModel):
     method: str = "GET"
     path: str = "/"
@@ -650,6 +667,9 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
         return "BUFFER_MAPPING_SUSPECT", None, None
 
     buckets = rebucket_pcre_by_flags(buckets)
+    if _is_http_binary_unsafe(buckets, rule.body.sid):
+        return "SKIP_HTTP_BINARY_UNSAFE", None, None
+
     req = build_http_request_from_buckets(buckets, sid=rule.body.sid)
     ensure_common_headers(server, req)
     return strategy, req, None
