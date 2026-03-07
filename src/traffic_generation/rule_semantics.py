@@ -244,6 +244,9 @@ def extract_header_candidates_from_raw_clauses(
         body_rx, _ = parse_pcre_raw(getattr(c, "raw", ""))
 
         m = re.search(r"User-Agent\\:\s*0\\:0\\:\[\^\\x0a\|\\x0d\]\{(\d+)\}", body_rx, flags=re.IGNORECASE)
+        if not m:
+            # 兼容更通用写法：[^\n]{120} / [^\x0a\x0d]{128} 等
+            m = re.search(r"User-Agent\\:\s*0\\:0\\:\[\^[^\]]+\]\{(\d+)\}", body_rx, flags=re.IGNORECASE)
         if m:
             n = int(m.group(1))
             set_header_case_insensitive(headers, "User-Agent", "0:0:" + ("A" * n))

@@ -329,6 +329,19 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             if k == "rev" and v is not None:
                 body.rev = v
             continue
+        if k in LEGACY_BUFFER_MODIFIERS:
+            mapped = LEGACY_BUFFER_MODIFIERS[k]
+            if last_mod_target == "content" and last_content is not None:
+                last_content.buffer = mapped
+            elif last_mod_target == "pcre" and last_pcre is not None:
+                last_pcre.buffer = mapped
+            else:
+                # 兜底：若 modifier 前没有可绑定的匹配项，退化为 sticky 切换
+                bs = BufferSwitch(buffer=mapped)
+                body.clauses.append(bs)
+                last_buffer_switch = bs
+            continue
+
         if k in STICKY_BUFFER_KEYWORDS and v is None:
             bs = BufferSwitch(buffer=STICKY_BUFFER_KEYWORDS[k])
             body.clauses.append(bs)
@@ -379,12 +392,6 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             continue
         if k == "endswith" and last_content is not None:
             last_content.endswith = True
-            continue
-        if k in LEGACY_BUFFER_MODIFIERS:
-            mapped = LEGACY_BUFFER_MODIFIERS[k]
-            bs = BufferSwitch(buffer=mapped)
-            body.clauses.append(bs)
-            last_buffer_switch = bs
             continue
         if k in {"offset", "depth", "distance", "within"} and v is not None and last_content is not None:
             try:
