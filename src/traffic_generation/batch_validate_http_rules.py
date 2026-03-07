@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -18,7 +19,7 @@ from traffic_generation.http_fixed import (
     send_raw_http_bytes,
 )
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
-from traffic_generation.rule_semantics import get_rule_admission_skip_reason
+from traffic_generation.rule_semantics import extract_http_plan, get_rule_admission_skip_reason
 
 SKIP_NOT_ALERT_HTTP = "SKIP_NOT_ALERT_HTTP"
 SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY = "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
@@ -219,10 +220,42 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         else:
             solver_backends[bucket_name] = "z3_or_greedy"
 
+    tx_plan = extract_http_plan(rule)
+    tx_plan_dict = {
+        "flow": {
+            "to_server": tx_plan.flow.to_server,
+            "established": tx_plan.flow.established,
+            "not_established": tx_plan.flow.not_established,
+        },
+        "request_segments": [
+            {
+                "buffer": seg.buffer,
+                "matches": [
+                    {
+                        "kind": m.kind,
+                        "raw": m.raw,
+                        "modifiers": {
+                            "nocase": m.modifiers.nocase,
+                            "offset": m.modifiers.offset,
+                            "depth": m.modifiers.depth,
+                            "distance": m.modifiers.distance,
+                            "within": m.modifiers.within,
+                            "rawbytes": m.modifiers.rawbytes,
+                            "negated": m.modifiers.negated,
+                        },
+                    }
+                    for m in seg.matches
+                ],
+            }
+            for seg in tx_plan.request_segments
+        ],
+    }
+
     return {
         "sid": rule.body.sid,
         "msg": rule.body.msg,
         "flow": rule.body.flow.model_dump() if rule.body.flow else None,
+        "transaction_plan": tx_plan_dict,
         "unsupported_keywords": sorted(set(rule_ast.unsupported_keywords)),
         "mapping_suspect": bool(buckets.get("_mapping_suspect")),
         "bucket_terms": bucket_terms,
@@ -231,6 +264,23 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         "unsat_reasons": unsat_reasons,
     }
 
+
+
+
+def normalize_rule_for_suricata_eval(rule_text: str) -> str:
+    """
+    归一化 rule header，避免对 HOME_NET/EXTERNAL_NET/HTTP_PORTS 变量配置强依赖。
+    仅用于离线回放验证，不改动 options。
+    """
+    text = (rule_text or "").strip()
+    m = re.match(r"^\s*(alert|pass|drop|reject|log)\s+(\S+)\s+\S+\s+\S+\s+(->|<>)\s+\S+\s+\S+\s*\(", text, flags=re.IGNORECASE)
+    if not m:
+        return text
+    action = m.group(1)
+    protocol = m.group(2)
+    direction = m.group(3)
+    normalized = f"{action} {protocol} any any {direction} any any ("
+    return normalized + text[m.end():]
 
 def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     sid_dir = root / f"{sid}_{index:05d}"
@@ -258,7 +308,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     eve_path = sid_dir / "eve.json"
     diagnose_path = sid_dir / "diagnose.json"
 
-    rule_path.write_text(rule_ast.raw_text.strip() + "\n", encoding="utf-8")
+    normalized_rule_text = normalize_rule_for_suricata_eval(rule_ast.raw_text)
+    rule_path.write_text(normalized_rule_text.strip() + "\n", encoding="utf-8")
 
     plan = build_rule_plan(rule, rule_ast)
     write_json(plan_path, plan)
