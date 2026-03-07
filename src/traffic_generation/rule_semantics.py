@@ -117,8 +117,33 @@ def _split_domain_and_path(tok: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def classify_http_rule_strategy(clauses: List[object]) -> Literal["sticky", "recoverable_raw", "raw_text"]:
-    _ = clauses
-    return "sticky"
+    if has_explicit_buffer_switch(clauses):
+        return "sticky"
+
+    contents = [c for c in clauses if isinstance(c, ContentMatch) and not getattr(c, "negated", False)]
+    pcres = [c for c in clauses if PcreMatch is not None and isinstance(c, PcreMatch) and not getattr(c, "negated", False)]
+
+    decoded_tokens = [(getattr(c, "decoded", "") or getattr(c, "raw", "")).strip() for c in contents]
+    decoded_tokens = [t for t in decoded_tokens if t]
+
+    for t in decoded_tokens:
+        low = t.lower()
+        if low.startswith(("host:", "user-agent:", "referer:", "cookie:", "accept:", "connection:")):
+            return "recoverable_raw"
+        if t.upper() in {"GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH"}:
+            return "recoverable_raw"
+
+    if any(t.lower() in {"host:", "user-agent:", "referer:", "cookie:"} for t in decoded_tokens):
+        return "recoverable_raw"
+
+    for c in contents:
+        if any(getattr(c, k, None) is not None for k in ("distance", "within", "offset", "depth")):
+            return "raw_text"
+
+    if pcres:
+        return "raw_text"
+
+    return "raw_text"
 
 
 def extract_header_candidates_from_raw_clauses(
@@ -219,6 +244,9 @@ def extract_header_candidates_from_raw_clauses(
         body_rx, _ = parse_pcre_raw(getattr(c, "raw", ""))
 
         m = re.search(r"User-Agent\\:\s*0\\:0\\:\[\^\\x0a\|\\x0d\]\{(\d+)\}", body_rx, flags=re.IGNORECASE)
+        if not m:
+            # 兼容更通用写法：[^\n]{120} / [^\x0a\x0d]{128} 等
+            m = re.search(r"User-Agent\\:\s*0\\:0\\:\[\^[^\]]+\]\{(\d+)\}", body_rx, flags=re.IGNORECASE)
         if m:
             n = int(m.group(1))
             set_header_case_insensitive(headers, "User-Agent", "0:0:" + ("A" * n))

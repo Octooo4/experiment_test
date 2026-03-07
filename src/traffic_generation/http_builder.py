@@ -274,7 +274,10 @@ def rebucket_pcre_by_flags(buckets: Dict[str, Any]) -> Dict[str, Any]:
             if PcreMatch is not None and isinstance(clause, PcreMatch) and not getattr(clause, "negated", False):
                 _, flags = parse_pcre_raw(getattr(clause, "raw", ""))
                 dst = pcre_flags_to_bucket(flags)
-                if dst in moved and isinstance(moved[dst], list):
+                if dst == src:
+                    # 防止向正在遍历的同一列表回写，导致列表膨胀和近似死循环。
+                    keep.append(clause)
+                elif dst in moved and isinstance(moved[dst], list):
                     moved[dst].append(clause)
                 else:
                     keep.append(clause)
@@ -341,8 +344,24 @@ def build_http_request_from_raw_clauses(
             t = tok
             if t.lower().startswith("host:"):
                 t = t.split(":", 1)[1].strip()
+
+            # 形如 ".info" 的后缀优先并到已有 Host，适配 host 前缀+后缀拆分规则
             if t.startswith("."):
+                current_host = host_candidate
+                if current_host is None:
+                    for k, v in headers.items():
+                        if k.lower() == "host":
+                            current_host = (v or "").strip()
+                            break
+                if current_host:
+                    merged_host = current_host.rstrip(".") + t
+                    if host_candidate is not None:
+                        host_candidate = merged_host
+                    else:
+                        set_header_case_insensitive(headers, "Host", merged_host)
+                    continue
                 t = "www" + t
+
             if not has_header(headers, "Host") and not host_candidate:
                 host_candidate = t
             else:
@@ -661,6 +680,19 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
     from parse.buckets_sorting import split_clauses_for_http_generation
 
     strategy = classify_http_rule_strategy(rule.body.clauses)
+
+    if strategy == "recoverable_raw":
+        req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
+        ensure_common_headers(server, req)
+        return strategy, req, None
+
+    if strategy == "raw_text":
+        raw_bytes = build_raw_http_text_request_from_clauses(
+            rule.body.clauses,
+            sid=rule.body.sid,
+            server=server,
+        )
+        return strategy, None, raw_bytes
 
     buckets = split_clauses_for_http_generation(rule.body.clauses)
     if buckets.get("_mapping_suspect"):
