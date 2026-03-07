@@ -649,16 +649,6 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
 
 def build_transaction_artifacts_for_rule(
     rule, server: str
-) -> Tuple[str, Optional[HttpRequestSpec], Optional[bytes], Optional[bytes]]:
-    from parse.buckets_sorting import split_clauses_for_http_generation
-
+) -> Tuple[str, Optional[HttpRequestSpec], Optional[bytes]]:
     strategy, req, raw_bytes = build_request_for_rule(rule, server)
-
-    synthetic_resp: Optional[bytes] = None
-    if strategy == "sticky":
-        buckets = split_clauses_for_http_generation(rule.body.clauses)
-        buckets = rebucket_pcre_by_flags(buckets)
-        if buckets.get("response_body") or buckets.get("status_code") or buckets.get("status_msg"):
-            synthetic_resp = build_http_response_from_buckets(buckets, sid=rule.body.sid)
-
-    return strategy, req, raw_bytes, synthetic_resp
+    return strategy, req, raw_bytes

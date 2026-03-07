@@ -18,6 +18,95 @@ def has_explicit_buffer_switch(clauses: List[object]) -> bool:
     return any(isinstance(c, BufferSwitch) for c in clauses)
 
 
+REQUEST_SIDE_BUFFERS = {
+    "pkt",
+    "http.method",
+    "http.uri",
+    "http.uri.raw",
+    "http.request_line",
+    "http.start",
+    "http.protocol",
+    "http.header",
+    "http.header.raw",
+    "http.header_names",
+    "http.host",
+    "http.host.raw",
+    "http.user_agent",
+    "http.referer",
+    "http.referer.raw",
+    "http.accept",
+    "http.accept_lang",
+    "http.accept_enc",
+    "http.connection",
+    "http.content_type",
+    "http.content_len",
+    "http.cookie",
+    "http.cookie.raw",
+    "http.request_body",
+}
+
+RESPONSE_SIDE_BUFFERS = {
+    "http.response_body",
+    "http.stat_code",
+    "http.stat_msg",
+    "file.data",
+}
+
+
+def get_rule_admission_skip_reason(rule) -> Optional[str]:
+    header = getattr(rule, "header", None)
+    body = getattr(rule, "body", None)
+
+    action = (getattr(header, "action", "") or "").lower()
+    protocol = (getattr(header, "protocol", "") or "").lower()
+    if action != "alert" or protocol != "http":
+        return "SKIP_NOT_ALERT_HTTP"
+
+    flow = getattr(body, "flow", None)
+    if flow and bool(getattr(flow, "to_client", False)):
+        return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+
+    clauses = list(getattr(body, "clauses", []) or [])
+    current_buf = "pkt"
+    has_explicit_direction = bool(flow) and (
+        bool(getattr(flow, "to_server", False)) or bool(getattr(flow, "to_client", False))
+    )
+
+    for clause in clauses:
+        if isinstance(clause, BufferSwitch):
+            current_buf = getattr(clause, "buffer", "pkt") or "pkt"
+            if current_buf in RESPONSE_SIDE_BUFFERS:
+                return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+            continue
+
+        clause_buf = getattr(clause, "buffer", None) or current_buf
+        if clause_buf in RESPONSE_SIDE_BUFFERS:
+            return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+        if clause_buf == "http.response_line":
+            return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+
+        if PcreMatch is not None and isinstance(clause, PcreMatch) and clause_buf in RESPONSE_SIDE_BUFFERS:
+            return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+
+    if flow and bool(getattr(flow, "to_server", False)):
+        return None
+
+    if has_explicit_direction:
+        return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+
+    for clause in clauses:
+        if isinstance(clause, BufferSwitch):
+            if (getattr(clause, "buffer", "pkt") or "pkt") not in REQUEST_SIDE_BUFFERS:
+                return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+            continue
+
+        clause_buf = getattr(clause, "buffer", None)
+        if clause_buf and clause_buf not in REQUEST_SIDE_BUFFERS:
+            return "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+
+    return None
+
+
 def _looks_like_host_fragment(tok: str) -> bool:
     t = (tok or "").strip()
     if not t:
