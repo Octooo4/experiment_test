@@ -1,0 +1,247 @@
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2003651	no_alert
+2011176	no_alert
+2010866	no_alert
+2007647	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2000327	no_alert
+2001531	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2000327	no_alert
+2001531	no_alert
+2000327	no_alert
+2001531	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2000327	no_alert
+2001531	no_alert
+2000327	no_alert
+2000327	exception: NameError("name 'has_http_targeting' is not defined")
+2001531	exception: NameError("name 'has_http_targeting' is not defined")
+2001222	exception: NameError("name 'has_http_targeting' is not defined")
+2001043	exception: NameError("name 'has_http_targeting' is not defined")
+2003651	exception: NameError("name 'has_http_targeting' is not defined")
+2011176	exception: NameError("name 'has_http_targeting' is not defined")
+2010866	exception: NameError("name 'has_http_targeting' is not defined")
+2007647	exception: NameError("name 'has_http_targeting' is not defined")
+2007615	exception: NameError("name 'has_http_targeting' is not defined")
+2011353	exception: NameError("name 'has_http_targeting' is not defined")
+2008491	exception: NameError("name 'has_http_targeting' is not defined")
+2007805	exception: NameError("name 'has_http_targeting' is not defined")
+2011474	exception: NameError("name 'has_http_targeting' is not defined")
+2000930	exception: NameError("name 'has_http_targeting' is not defined")
+2011335	exception: NameError("name 'has_http_targeting' is not defined")
+2011792	exception: NameError("name 'has_http_targeting' is not defined")
+2011522	exception: NameError("name 'has_http_targeting' is not defined")
+2011524	exception: NameError("name 'has_http_targeting' is not defined")
+2001425	exception: NameError("name 'has_http_targeting' is not defined")
+2007504	exception: NameError("name 'has_http_targeting' is not defined")
+2007505	exception: NameError("name 'has_http_targeting' is not defined")
+2007506	exception: NameError("name 'has_http_targeting' is not defined")
+2007507	exception: NameError("name 'has_http_targeting' is not defined")
+2007508	exception: NameError("name 'has_http_targeting' is not defined")
+2007509	exception: NameError("name 'has_http_targeting' is not defined")
+2006367	exception: NameError("name 'has_http_targeting' is not defined")
+2006368	exception: NameError("name 'has_http_targeting' is not defined")
+2003453	exception: NameError("name 'has_http_targeting' is not defined")
+2006410	exception: NameError("name 'has_http_targeting' is not defined")
+2002067	exception: NameError("name 'has_http_targeting' is not defined")
+2006718	exception: NameError("name 'has_http_targeting' is not defined")
+2006719	exception: NameError("name 'has_http_targeting' is not defined")
+2006720	exception: NameError("name 'has_http_targeting' is not defined")
+2006721	exception: NameError("name 'has_http_targeting' is not defined")
+2006722	exception: NameError("name 'has_http_targeting' is not defined")
+2006723	exception: NameError("name 'has_http_targeting' is not defined")
+2006724	exception: NameError("name 'has_http_targeting' is not defined")
+2006725	exception: NameError("name 'has_http_targeting' is not defined")
+2006726	exception: NameError("name 'has_http_targeting' is not defined")
+2006727	exception: NameError("name 'has_http_targeting' is not defined")
+2006728	exception: NameError("name 'has_http_targeting' is not defined")
+2006729	exception: NameError("name 'has_http_targeting' is not defined")
+2007024	exception: NameError("name 'has_http_targeting' is not defined")
+2007025	exception: NameError("name 'has_http_targeting' is not defined")
+2007026	exception: NameError("name 'has_http_targeting' is not defined")
+2007027	exception: NameError("name 'has_http_targeting' is not defined")
+2007028	exception: NameError("name 'has_http_targeting' is not defined")
+2007029	exception: NameError("name 'has_http_targeting' is not defined")
+2008740	exception: NameError("name 'has_http_targeting' is not defined")
+2011889	exception: NameError("name 'has_http_targeting' is not defined")
+2012280	exception: NameError("name 'has_http_targeting' is not defined")
+2012281	exception: NameError("name 'has_http_targeting' is not defined")
+2000307	exception: NameError("name 'has_http_targeting' is not defined")
+2012311	exception: NameError("name 'has_http_targeting' is not defined")
+2012292	exception: NameError("name 'has_http_targeting' is not defined")
+2012402	exception: NameError("name 'has_http_targeting' is not defined")
+2012516	exception: NameError("name 'has_http_targeting' is not defined")
+2011818	exception: NameError("name 'has_http_targeting' is not defined")
+2012081	exception: NameError("name 'has_http_targeting' is not defined")
+2012082	exception: NameError("name 'has_http_targeting' is not defined")
+2008802	exception: NameError("name 'has_http_targeting' is not defined")
+2008349	exception: NameError("name 'has_http_targeting' is not defined")
+2012580	exception: NameError("name 'has_http_targeting' is not defined")
+2012618	exception: NameError("name 'has_http_targeting' is not defined")
+2012626	exception: NameError("name 'has_http_targeting' is not defined")
+2010569	exception: NameError("name 'has_http_targeting' is not defined")
+2012752	exception: NameError("name 'has_http_targeting' is not defined")
+2101868	exception: NameError("name 'has_http_targeting' is not defined")
+2012785	exception: NameError("name 'has_http_targeting' is not defined")
+2010682	exception: NameError("name 'has_http_targeting' is not defined")
+2010683	exception: NameError("name 'has_http_targeting' is not defined")
+2012207	exception: NameError("name 'has_http_targeting' is not defined")
+2101808	exception: NameError("name 'has_http_targeting' is not defined")
+2101827	exception: NameError("name 'has_http_targeting' is not defined")
+2101829	exception: NameError("name 'has_http_targeting' is not defined")
+2101830	exception: NameError("name 'has_http_targeting' is not defined")
+2008241	exception: NameError("name 'has_http_targeting' is not defined")
+2011468	exception: NameError("name 'has_http_targeting' is not defined")
+2012323	exception: NameError("name 'has_http_targeting' is not defined")
+2012796	exception: NameError("name 'has_http_targeting' is not defined")
+2013029	exception: NameError("name 'has_http_targeting' is not defined")
+2013039	exception: NameError("name 'has_http_targeting' is not defined")
+2012613	exception: NameError("name 'has_http_targeting' is not defined")
+2011415	exception: NameError("name 'has_http_targeting' is not defined")
+2009987	exception: NameError("name 'has_http_targeting' is not defined")
+2012958	exception: NameError("name 'has_http_targeting' is not defined")
+2012588	exception: NameError("name 'has_http_targeting' is not defined")
+2013205	exception: NameError("name 'has_http_targeting' is not defined")
+2013215	exception: NameError("name 'has_http_targeting' is not defined")
+2013218	exception: NameError("name 'has_http_targeting' is not defined")
+2007781	exception: NameError("name 'has_http_targeting' is not defined")
+2003409	exception: NameError("name 'has_http_targeting' is not defined")
+2007762	exception: NameError("name 'has_http_targeting' is not defined")
+2003122	exception: NameError("name 'has_http_targeting' is not defined")
+2011354	exception: NameError("name 'has_http_targeting' is not defined")
+2013323	exception: NameError("name 'has_http_targeting' is not defined")
+2013343	exception: NameError("name 'has_http_targeting' is not defined")
+2013204	exception: NameError("name 'has_http_targeting' is not defined")
+2008781	exception: NameError("name 'has_http_targeting' is not defined")
+2013402	exception: NameError("name 'has_http_targeting' is not defined")
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2003651	no_alert
+2011176	no_alert
+2010866	no_alert
+2007647	no_alert
+2007615	no_alert
+2011353	no_alert
+2008491	no_alert
+2007805	no_alert
+2011474	no_alert
+2000930	no_alert
+2011335	no_alert
+2011792	exception: InvalidURL("URL can't contain control characters. '/&port=/socks.php?name=ojflpcrsdsrbxghvhxc&port=5{1, 5}/socks.php?name=' (found at least ' ')")
+2011522	no_alert
+2011524	no_alert
+2001425	exception: InvalidURL('URL can\'t contain control characters. \'/Content-Disposition: form-data; name="msgbody"name="form-data; file0"; filename="\' (found at least \' \')')
+2007504	no_alert
+2007505	exception: InvalidURL("URL can't contain control characters. '/vehicleID=UNIONUNION                 SELECT/vehiclelistings.asp?' (found at least ' ')")
+2007506	no_alert
+2007507	no_alert
+2007508	no_alert
+2007509	no_alert
+2006367	no_alert
+2006368	no_alert
+2003453	exception: InvalidURL("URL can't contain control characters. '/Host: www.netvacy.com' (found at least ' ')")
+2006410	no_alert
+2002067	no_alert
+2006718	no_alert
+2006719	exception: InvalidURL("URL can't contain control characters. '/iType=UNIONUNION                   SELECT/detail.asp?' (found at least ' ')")
+2006720	no_alert
+2006721	no_alert
+2006722	no_alert
+2006723	no_alert
+2006724	no_alert
+2006725	exception: InvalidURL("URL can't contain control characters. '/Action=UNIONUNION                    SELECT/detail.asp?' (found at least ' ')")
+2006726	no_alert
+2006727	no_alert
+2006728	no_alert
+2006729	no_alert
+2007024	no_alert
+2007025	exception: InvalidURL("URL can't contain control characters. '/ad_id=UNIONUNION    SELECT/ad.asp?' (found at least ' ')")
+2007026	no_alert
+2007027	no_alert
+2007028	no_alert
+2007029	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2003651	no_alert
+2011176	no_alert
+2010866	no_alert
+2007647	no_alert
+2007615	no_alert
+2011353	no_alert
+2008491	no_alert
+2007805	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2000327	no_alert
+2001531	no_alert
+2001222	no_alert
+2001043	no_alert
+2003651	no_alert
+2011176	no_alert
+2010866	no_alert
+2007647	no_alert
+2014006	no_alert
+2013548	no_alert
+2012979	no_alert
+2003818	no_alert
+2039112	no_alert
+2005922	no_alert
+2001221	no_alert
+2046748	no_alert
+2011877	no_alert
+2001793	no_alert
+2010096	no_alert
+2005964	no_alert
+2043444	no_alert
+2034023	no_alert
+2040588	no_alert
+2013872	no_alert
+2007118	no_alert
+2003790	no_alert
+2016123	exception: NameError("name '_merge_uri_parts' is not defined")
+2012414	exception: NameError("name '_merge_uri_parts' is not defined")
+2009005	exception: NameError("name '_normalize_uri_fragment' is not defined")
+2018240	exception: NameError("name '_merge_uri_parts' is not defined")
+2039506	exception: NameError("name '_merge_uri_parts' is not defined")
+2011035	exception: NameError("name '_merge_uri_parts' is not defined")
+2016352	exception: NameError("name '_merge_uri_parts' is not defined")
+2028572	exception: NameError("name '_merge_uri_parts' is not defined")
+2046076	exception: NameError("name '_merge_uri_parts' is not defined")
+2026083	exception: NameError("name '_merge_uri_parts' is not defined")
+2020076	no_alert
+2020093	no_alert
+2018148	no_alert
+2052949	no_alert
+2013759	no_alert
+2017975	no_alert
+2061104	no_alert
+2008882	no_alert
+2019498	no_alert
+2001418	no_alert

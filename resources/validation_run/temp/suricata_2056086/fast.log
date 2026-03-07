@@ -1,0 +1,1 @@
+03/07/2026-12:37:10.448994  [**] [1:2056086:1] ET WEB_SERVER Adobe ColdFusion Arbitrary File Read Vulnerability M1 - UUID Leak Via servermanager.cfc getHeartBeat Method (CVE-2024-20767) [**] [Classification: Attempted Administrator Privilege Gain] [Priority: 1] {TCP} 192.168.1.1:51418 -> 192.168.1.199:80

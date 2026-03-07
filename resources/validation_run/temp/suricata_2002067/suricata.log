@@ -1,0 +1,20 @@
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Notice: suricata: This is Suricata version 8.0.3 RELEASE running in USER mode
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: cpu: CPUs/cores online: 20
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Notice: runmodes: thread stack size of 0 too small: setting to 512k
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: suricata: Setting engine mode to IDS mode by default
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: exception-policy: master exception-policy set to: auto
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: coredump-config: Configuring core dump is not yet supported on Windows.
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: logopenfile: fast output device (regular) initialized: fast.log
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: logopenfile: eve-log output device (regular) initialized: eve.json
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: logopenfile: stats output device (regular) initialized: stats.log
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: detect: 1 rule files processed. 1 rules successfully loaded, 0 rules failed, 0 rules skipped
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Warning: threshold-config: Error opening file: "C:\Program Files\Suricata\\\threshold.config": No such file or directory
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Info: detect: 1 signatures processed. 0 are IP-only rules, 1 are inspecting packet payload, 0 inspect application layer, 0 are decoder event only
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Warning: suricata: setrlimit unavailable.
+[23404 - RX#01] 2026-03-07 11:28:09 Info: pcap: Starting file run for E:\Develop\devpy\experiment\resources\validation_run\temp\2002067.pcap
+[23404 - RX#01] 2026-03-07 11:28:09 Info: pcap: pcap file E:\Develop\devpy\experiment\resources\validation_run\temp\2002067.pcap end of file reached (pcap err code 0)
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Notice: threads: Threads created -> RX: 1 W: 20 FM: 1 FR: 1   Engine started.
+[21236 - Suricata-Main] 2026-03-07 11:28:09 Notice: suricata: Signal Received.  Stopping engine.
+[21236 - Suricata-Main] 2026-03-07 11:28:10 Info: suricata: time elapsed 1.083s
+[23404 - RX#01] 2026-03-07 11:28:10 Notice: pcap: read 1 file, 10 packets, 1246 bytes
+[21236 - Suricata-Main] 2026-03-07 11:28:11 Info: counters: Alerts: 0
