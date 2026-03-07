@@ -67,6 +67,8 @@ class ContentMatch(BaseModel):
     raw: str
     decoded: str
     negated: bool = False
+    # legacy modifier (http_uri/http_header...) may bind buffer to this specific content
+    buffer: Optional[HttpBufferLiteral] = None
 
     nocase: bool = False
     fast_pattern: bool = False
