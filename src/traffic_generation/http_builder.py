@@ -83,6 +83,19 @@ def render_http_request(req: HttpRequestSpec) -> str:
     return "\r\n".join(lines)
 
 
+
+
+
+def _drop_dedicated_headers_from_lines(header_lines: List[str]) -> List[str]:
+    dedicated = {"host", "user-agent", "cookie"}
+    out: List[str] = []
+    for line in header_lines:
+        name, _, _ = line.partition(":")
+        if name.strip().lower() in dedicated:
+            continue
+        out.append(line)
+    return out
+
 def _normalize_uri_fragment(s: str) -> str:
     if not s:
         return ""
@@ -438,6 +451,7 @@ def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", defa
 
     header_transforms = transforms_by_buf.get("http.header", []) + transforms_by_buf.get("http.header.raw", [])
     lowercase_names = "header_lowercase" in header_transforms
+    header_lines = _drop_dedicated_headers_from_lines(header_lines)
     headers = header_lines_to_dict(header_lines, sid=sid, lowercase_names=lowercase_names)
 
     apply_named_header_buckets(headers, buckets, sid)
@@ -631,20 +645,14 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
 
     strategy = classify_http_rule_strategy(rule.body.clauses)
 
-    if strategy == "sticky":
-        buckets = split_clauses_for_http_generation(rule.body.clauses)
-        buckets = rebucket_pcre_by_flags(buckets)
-        req = build_http_request_from_buckets(buckets, sid=rule.body.sid)
-        ensure_common_headers(server, req)
-        return strategy, req, None
+    buckets = split_clauses_for_http_generation(rule.body.clauses)
+    if buckets.get("_mapping_suspect"):
+        return "BUFFER_MAPPING_SUSPECT", None, None
 
-    if strategy == "recoverable_raw":
-        req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
-        ensure_common_headers(server, req)
-        return strategy, req, None
-
-    raw_bytes = build_raw_http_text_request_from_clauses(rule.body.clauses, sid=rule.body.sid, server=server)
-    return strategy, None, raw_bytes
+    buckets = rebucket_pcre_by_flags(buckets)
+    req = build_http_request_from_buckets(buckets, sid=rule.body.sid)
+    ensure_common_headers(server, req)
+    return strategy, req, None
 
 
 def build_transaction_artifacts_for_rule(
