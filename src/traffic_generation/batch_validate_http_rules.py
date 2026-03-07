@@ -13,9 +13,9 @@ from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rule
 from traffic_generation.http_fixed import (
     send_http_request,
     send_raw_http_bytes,
-    render_http_request,
     build_transaction_artifacts_for_rule,
 )
+from traffic_generation.rule_semantics import get_rule_admission_skip_reason
 
 # =========================
 # 配置区：按你的环境修改
@@ -124,29 +124,6 @@ def extract_rule_feature_summary(rule) -> dict:
         "counts": by_type,
         "buffers": sorted(b for b in buffers if b),
     }
-
-
-def build_request_from_rule_ast(rule_ast: Rule):
-    rule = ast_to_suricata_rule(rule_ast)
-    sid = safe_sid(rule.body.sid)
-
-    strategy, req, raw_bytes, synthetic_resp = build_transaction_artifacts_for_rule(rule, TARGET_SERVER)
-
-    console(f"[{sid}] strategy={strategy}")
-    console(f"[{sid}] clause_count={len(rule.body.clauses)}")
-    for c in rule.body.clauses[:10]:
-        console(f"  clause: {c}")
-
-    if req is not None:
-        console(f"[{sid}] structured/recoverable request built")
-        console(render_http_request(req))
-    else:
-        console(f"[{sid}] raw text request built")
-        if raw_bytes is None:
-            raise ValueError(f"{sid}: strategy=raw_text but raw_bytes is None")
-        console(raw_bytes.decode("latin-1", errors="replace"))
-
-    return rule, strategy, req, raw_bytes, synthetic_resp
 
 
 def start_capture(pcap_path: Path) -> subprocess.Popen:
@@ -311,12 +288,36 @@ def process_one_rule(rule_text: str, rule_ast: Rule, index: int, total: int) -> 
     sid = safe_sid(rule_ast.sid)
 
     try:
-        console(f"[{index}/{total}] sid={sid} parsing/building request...")
-        rule, strategy, req, raw_bytes, synthetic_resp = build_request_from_rule_ast(rule_ast)
-        rule_features = extract_rule_feature_summary(rule)
+        console(f"[{index}/{total}] sid={sid} parsing rule...")
+        rule = ast_to_suricata_rule(rule_ast)
         sid = safe_sid(rule.body.sid)
+        rule_features = extract_rule_feature_summary(rule)
 
         console(f"[{index}/{total}] sid={sid} rule_features={rule_features}")
+
+        skip_reason = get_rule_admission_skip_reason(rule)
+        if skip_reason:
+            elapsed = round(time.time() - t0, 2)
+            console(f"[{index}/{total}] sid={sid} ⏭ skip_reason={skip_reason}")
+            log_json({
+                "index": index,
+                "total": total,
+                "sid": sid,
+                "skip_reason": skip_reason,
+                "elapsed_sec": elapsed,
+                "rule_features": rule_features,
+            })
+            FAIL_COUNT += 1
+            save_failed_artifacts(sid, rule_text, None, skip_reason)
+            return
+
+        console(f"[{index}/{total}] sid={sid} building request...")
+        strategy, req, raw_bytes = build_transaction_artifacts_for_rule(rule, TARGET_SERVER)
+
+        console(f"[{sid}] strategy={strategy}")
+        console(f"[{sid}] clause_count={len(rule.body.clauses)}")
+        for c in rule.body.clauses[:10]:
+            console(f"  clause: {c}")
 
         if req is not None:
             console(f"[{index}/{total}] sid={sid} built request detail:")
@@ -381,10 +382,6 @@ def process_one_rule(rule_text: str, rule_ast: Rule, index: int, total: int) -> 
             "raw_text": (
                 raw_bytes.decode("latin-1", errors="replace")
                 if raw_bytes is not None else None
-            ),
-            "synthetic_response_preview": (
-                synthetic_resp.decode("latin-1", errors="replace")[:400]
-                if synthetic_resp is not None else None
             ),
             "rule_features": rule_features,
         })
