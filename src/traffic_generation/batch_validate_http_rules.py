@@ -19,7 +19,7 @@ from traffic_generation.http_fixed import (
     send_raw_http_bytes,
 )
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
-from traffic_generation.rule_semantics import get_rule_admission_skip_reason
+from traffic_generation.rule_semantics import extract_http_plan, get_rule_admission_skip_reason
 
 SKIP_NOT_ALERT_HTTP = "SKIP_NOT_ALERT_HTTP"
 SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY = "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
@@ -220,10 +220,42 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         else:
             solver_backends[bucket_name] = "z3_or_greedy"
 
+    tx_plan = extract_http_plan(rule)
+    tx_plan_dict = {
+        "flow": {
+            "to_server": tx_plan.flow.to_server,
+            "established": tx_plan.flow.established,
+            "not_established": tx_plan.flow.not_established,
+        },
+        "request_segments": [
+            {
+                "buffer": seg.buffer,
+                "matches": [
+                    {
+                        "kind": m.kind,
+                        "raw": m.raw,
+                        "modifiers": {
+                            "nocase": m.modifiers.nocase,
+                            "offset": m.modifiers.offset,
+                            "depth": m.modifiers.depth,
+                            "distance": m.modifiers.distance,
+                            "within": m.modifiers.within,
+                            "rawbytes": m.modifiers.rawbytes,
+                            "negated": m.modifiers.negated,
+                        },
+                    }
+                    for m in seg.matches
+                ],
+            }
+            for seg in tx_plan.request_segments
+        ],
+    }
+
     return {
         "sid": rule.body.sid,
         "msg": rule.body.msg,
         "flow": rule.body.flow.model_dump() if rule.body.flow else None,
+        "transaction_plan": tx_plan_dict,
         "unsupported_keywords": sorted(set(rule_ast.unsupported_keywords)),
         "mapping_suspect": bool(buckets.get("_mapping_suspect")),
         "bucket_terms": bucket_terms,

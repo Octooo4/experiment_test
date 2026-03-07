@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Tuple
 
 from core.models import BufferSwitch, ContentMatch
@@ -38,6 +39,108 @@ RESPONSE_SIDE_BUFFERS = {
     "http.stat_msg",
     "file.data",
 }
+
+
+@dataclass
+class FlowConstraint:
+    to_server: bool = False
+    established: bool = False
+    not_established: bool = False
+
+
+@dataclass
+class MatchModifiers:
+    nocase: bool = False
+    offset: Optional[int] = None
+    depth: Optional[int] = None
+    distance: Optional[int] = None
+    within: Optional[int] = None
+    rawbytes: bool = False
+    negated: bool = False
+
+
+@dataclass
+class ContentMatchPlan:
+    kind: str
+    raw: str
+    modifiers: MatchModifiers = field(default_factory=MatchModifiers)
+
+
+@dataclass
+class BufferSegment:
+    buffer: str
+    matches: List[ContentMatchPlan] = field(default_factory=list)
+
+
+@dataclass
+class TransactionPlan:
+    flow: FlowConstraint = field(default_factory=FlowConstraint)
+    request_segments: List[BufferSegment] = field(default_factory=list)
+
+
+def extract_http_plan(rule) -> TransactionPlan:
+    body = getattr(rule, "body", None)
+    flow = getattr(body, "flow", None)
+    plan = TransactionPlan(
+        flow=FlowConstraint(
+            to_server=bool(getattr(flow, "to_server", False)) if flow else False,
+            established=bool(getattr(flow, "established", False)) if flow else False,
+            not_established=not bool(getattr(flow, "established", False)) if flow else False,
+        )
+    )
+
+    clauses = list(getattr(body, "clauses", []) or [])
+    cur_buffer = "pkt_data"
+    cur_segment = BufferSegment(buffer=cur_buffer)
+    plan.request_segments.append(cur_segment)
+
+    for clause in clauses:
+        if isinstance(clause, BufferSwitch):
+            cur_buffer = getattr(clause, "buffer", "pkt_data") or "pkt_data"
+            cur_segment = BufferSegment(buffer=cur_buffer)
+            plan.request_segments.append(cur_segment)
+            continue
+
+        if isinstance(clause, ContentMatch):
+            effective_buffer = getattr(clause, "buffer", None)
+            if effective_buffer and effective_buffer != cur_buffer:
+                cur_buffer = effective_buffer
+                cur_segment = BufferSegment(buffer=cur_buffer)
+                plan.request_segments.append(cur_segment)
+            cur_segment.matches.append(
+                ContentMatchPlan(
+                    kind="content",
+                    raw=getattr(clause, "raw", "") or "",
+                    modifiers=MatchModifiers(
+                        nocase=bool(getattr(clause, "nocase", False)),
+                        offset=getattr(clause, "offset", None),
+                        depth=getattr(clause, "depth", None),
+                        distance=getattr(clause, "distance", None),
+                        within=getattr(clause, "within", None),
+                        negated=bool(getattr(clause, "negated", False)),
+                    ),
+                )
+            )
+            continue
+
+        if PcreMatch is not None and isinstance(clause, PcreMatch):
+            effective_buffer = getattr(clause, "buffer", None)
+            if effective_buffer and effective_buffer != cur_buffer:
+                cur_buffer = effective_buffer
+                cur_segment = BufferSegment(buffer=cur_buffer)
+                plan.request_segments.append(cur_segment)
+            cur_segment.matches.append(
+                ContentMatchPlan(
+                    kind="pcre",
+                    raw=getattr(clause, "raw", "") or "",
+                    modifiers=MatchModifiers(
+                        nocase=bool(getattr(clause, "nocase", False)),
+                        negated=bool(getattr(clause, "negated", False)),
+                    ),
+                )
+            )
+
+    return plan
 
 
 def get_rule_admission_skip_reason(rule) -> Optional[str]:
