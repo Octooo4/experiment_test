@@ -354,7 +354,7 @@ def build_http_request_from_raw_clauses(
                             current_host = (v or "").strip()
                             break
                 if current_host:
-                    merged_host = current_host.rstrip(".") + t
+                    merged_host = current_host + t
                     if host_candidate is not None:
                         host_candidate = merged_host
                     else:

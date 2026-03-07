@@ -29,7 +29,7 @@ def test_recoverable_raw_host_suffix_merges_into_host_header():
         ContentMatch(raw=".info|0d 0a|", decoded=".info\r\n"),
     ]
     req = build_http_request_from_raw_clauses(clauses, sid="2010866")
-    assert req.headers.get("Host") == "google.analytics.com.info"
+    assert req.headers.get("Host") == "google.analytics.com..info"
 
 
 def test_recoverable_raw_pcre_user_agent_0_0_len_pattern():
@@ -40,3 +40,19 @@ def test_recoverable_raw_pcre_user_agent_0_0_len_pattern():
     headers, _, _ = extract_header_candidates_from_raw_clauses(clauses, sid="2007647")
     assert "User-Agent" in headers
     assert headers["User-Agent"] == "0:0:" + ("A" * 120)
+
+
+def test_sid_2010866_shape_contains_double_dot_host_sequence():
+    clauses = [
+        ContentMatch(raw="GET ", decoded="GET "),
+        ContentMatch(raw="\r\nHost: google.analytics.com.", decoded="\r\nHost: google.analytics.com."),
+        ContentMatch(raw=".info\r\n", decoded=".info\r\n"),
+    ]
+    req = build_http_request_from_raw_clauses(clauses, sid="2010866")
+    text = "\r\n".join([
+        f"{req.method} {req.path} HTTP/1.1",
+        *[f"{k}: {v}" for k, v in req.headers.items()],
+        "",
+    ])
+    assert "Host: google.analytics.com..info" in text
+    assert "GET " in text[:4]
