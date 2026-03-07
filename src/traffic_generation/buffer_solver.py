@@ -30,6 +30,14 @@ class ConcreteMatch:
     within: Optional[int] = None
 
 
+@dataclass
+class SolveResult:
+    bytes: bytes
+    solved_by: str
+    unsat_reason: Optional[str] = None
+    negated_content_postfix_sanitized: bool = False
+
+
 def parse_content_string(s: str) -> bytes:
     """Parse Suricata content string to bytes.
 
@@ -187,13 +195,126 @@ def _strip_negated_contents(text: bytes, clauses: List[ConcreteMatch]) -> bytes:
     return out
 
 
+def _sanitize_negated_content_postfix(text: bytes, matches: List[ConcreteMatch]) -> tuple[bytes, bool]:
+    """Postfix sanitize to avoid accidental hits of negated content terms."""
+    out = bytearray(text)
+    changed = False
+    for c in matches:
+        if c.kind != "content" or not c.negated or not c.value:
+            continue
+        token = c.value
+        tlen = len(token)
+        scan_from = 0
+        while True:
+            idx = bytes(out).find(token, scan_from)
+            if idx < 0:
+                break
+            # Local rewrite: flip one byte in the matched window to avoid exact hit.
+            pivot = idx + tlen - 1
+            out[pivot] = (out[pivot] + 1) & 0xFF
+            changed = True
+            scan_from = idx + tlen
+    return bytes(out), changed
+
+
+def _build_with_positions(contents: List[ConcreteMatch], positions: List[int], fill: bytes) -> bytes:
+    s = bytearray()
+    for c, start in zip(contents, positions):
+        token = c.value
+        if not token:
+            continue
+        _pad_to(s, start, fill)
+        _pad_to(s, start + len(token), fill)
+        s[start : start + len(token)] = token
+    return bytes(s)
+
+
+def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResult:
+    """Solve concrete content placement with z3 optimize when available.
+
+    Falls back to greedy placement if z3 is unavailable or solver fails/unsat.
+    """
+    positive_contents = [m for m in matches if m.kind == "content" and not m.negated and m.value]
+    if not positive_contents:
+        sanitized, changed = _sanitize_negated_content_postfix(b"", matches)
+        return SolveResult(bytes=sanitized, solved_by="greedy", negated_content_postfix_sanitized=changed)
+
+    try:
+        from z3 import Int, Optimize, sat  # type: ignore
+
+        opt = Optimize()
+        starts = [Int(f"start_{i}") for i in range(len(positive_contents))]
+        total_len = Int("total_len")
+        opt.add(total_len >= 0)
+
+        prev_end = None
+        for i, c in enumerate(positive_contents):
+            token_len = len(c.value)
+            s_i = starts[i]
+            opt.add(s_i >= 0)
+
+            if c.startswith:
+                opt.add(s_i == 0)
+            if c.offset is not None:
+                opt.add(s_i == int(c.offset))
+
+            if prev_end is not None:
+                opt.add(s_i >= prev_end)
+
+            if c.distance is not None and prev_end is not None:
+                opt.add(s_i >= prev_end + int(c.distance))
+
+            if c.within is not None and prev_end is not None:
+                opt.add(s_i + token_len <= prev_end + int(c.within))
+
+            if c.depth is not None:
+                if c.offset is not None:
+                    opt.add(s_i + token_len <= int(c.offset) + int(c.depth))
+                else:
+                    opt.add(s_i + token_len <= int(c.depth))
+
+            opt.add(total_len >= s_i + token_len)
+            prev_end = s_i + token_len
+
+        if any(c.endswith for c in positive_contents):
+            tail = next((c for c in reversed(positive_contents) if c.endswith), None)
+            if tail is not None:
+                tail_idx = positive_contents.index(tail)
+                opt.add(starts[tail_idx] + len(tail.value) == total_len)
+
+        opt.minimize(total_len)
+        if opt.check() != sat:
+            raise RuntimeError("z3 optimize unsat")
+
+        model = opt.model()
+        solved_positions = [model.eval(s).as_long() for s in starts]
+        solved = _build_with_positions(positive_contents, solved_positions, fill=fill)
+        solved, changed = _sanitize_negated_content_postfix(solved, matches)
+        return SolveResult(
+            bytes=solved,
+            solved_by="z3_optimize",
+            negated_content_postfix_sanitized=changed,
+        )
+    except Exception as e:
+        greedy, _ = build_stream_from_contents(matches, fill=fill)
+        greedy, changed = _sanitize_negated_content_postfix(greedy, matches)
+        return SolveResult(
+            bytes=greedy,
+            solved_by="greedy",
+            unsat_reason=str(e),
+            negated_content_postfix_sanitized=changed,
+        )
+
+
 def synthesize_bucket_bytes(
     clauses: List[object], sid: str, *, fill: bytes = b"A", strip_crlf: bool = False
 ) -> bytes:
     concrete = [_concrete_from_clause(c, sid) for c in clauses]
     terms = [c for c in concrete if c is not None]
 
-    s, prev_end = build_stream_from_contents(terms, fill=fill) if terms else (b"", 0)
+    solved = solve_segment(terms, fill=fill) if terms else SolveResult(bytes=b"", solved_by="greedy")
+    s = solved.bytes
+    prev_end = len(s)
 
     for c in terms:
         if c.kind == "pcre" and not c.negated and c.generator is not None:
