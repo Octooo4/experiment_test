@@ -55,6 +55,7 @@ STICKY_BUFFER_KEYWORDS = {
     "http.stat_msg": "http.stat_msg",
     "http.response_line": "http.response_line",
     "file.data": "file.data",
+    "pkt_data": "pkt_data",
     "http_method": "http.method",
     "http_uri": "http.uri",
     "http_raw_uri": "http.uri.raw",
@@ -367,10 +368,9 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             continue
         if k in LEGACY_BUFFER_MODIFIERS:
             mapped = LEGACY_BUFFER_MODIFIERS[k]
-            if last_mod_target == "content" and last_content is not None:
-                last_content.buffer = mapped
-            elif last_mod_target == "pcre" and last_pcre is not None:
-                last_pcre.buffer = mapped
+            bs = BufferSwitch(buffer=mapped)
+            body.clauses.append(bs)
+            last_buffer_switch = bs
             continue
         if k in {"offset", "depth", "distance", "within"} and v is not None and last_content is not None:
             try:

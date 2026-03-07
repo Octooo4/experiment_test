@@ -111,6 +111,7 @@ STICKY_BUFFER_KEYWORDS = {
     "http.stat_msg": "http.stat_msg",
     "http.response_line": "http.response_line",
     "file.data": "file.data",
+    "pkt_data": "pkt_data",
 
     # 常见别名 / 下划线风格
     "http_method": "http.method",
@@ -272,10 +273,9 @@ def rule_to_suricata_rule(r: Any) -> SuricataRule:
 
         if k in _LEGACY_BUFFER_MODIFIERS:
             mapped = _LEGACY_BUFFER_MODIFIERS[k]
-            if last_mod_target == "content" and last_content is not None:
-                last_content.buffer = mapped
-            elif last_mod_target == "pcre" and last_pcre is not None:
-                last_pcre.buffer = mapped
+            bs = BufferSwitch(buffer=mapped)
+            body.clauses.append(bs)
+            last_buffer_switch = bs
             continue
 
         if k in _INT_KEYS and s_obj is not None and last_content is not None:

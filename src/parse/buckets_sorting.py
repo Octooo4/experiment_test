@@ -3,57 +3,62 @@ from typing import DefaultDict, List, Dict, Any
 
 from core.models import Clause, BufferSwitch, ContentMatch, PcreMatch, IsDataAtMatch, DSizeMatch, BSizeMatch
 
-# 请求侧常见 HTTP sticky buffers
+# 请求生成阶段允许的 buffer 映射（固定白名单）
 TARGET_BUCKET_BY_BUFFER = {
-    # request line / method / uri
     "http.method": "method",
     "http.uri": "uri",
     "http.uri.raw": "uri",
     "http.request_line": "request_line",
-    "http.start": "request_line",
-    "http.protocol": "protocol",
-
-    # generic headers
     "http.header": "header",
-    "http.header.raw": "header",
     "http.header_names": "header_names",
-
-    # named headers
-    "http.host": "host",
-    "http.host.raw": "host",
-    "http.user_agent": "user_agent",
-    "http.referer": "referer",
-    "http.referer.raw": "referer",
-    "http.accept": "accept",
-    "http.accept_lang": "accept_language",
-    "http.accept_enc": "accept_encoding",
-    "http.connection": "connection",
-    "http.content_type": "content_type",
-    "http.content_len": "content_length",
-
-    # cookie / body
     "http.cookie": "cookie",
-    "http.cookie.raw": "cookie",
+    "http.user_agent": "user_agent",
+    "http.host": "host",
     "http.request_body": "body",
-
-    # response/file side，当前请求生成阶段只能尽量归类
-    "http.response_body": "response_body",
-    "http.stat_code": "status_code",
-    "http.stat_msg": "status_msg",
-    "http.response_line": "response_line",
-    "file.data": "response_body",
 }
 
 
+def _looks_like_header_clause(clause: Clause) -> bool:
+    token = ""
+    if isinstance(clause, ContentMatch):
+        token = (getattr(clause, "decoded", "") or getattr(clause, "raw", "") or "").strip()
+    elif isinstance(clause, PcreMatch):
+        token = getattr(clause, "raw", "") or ""
+
+    if not token:
+        return False
+
+    low = token.lower()
+    return (
+        ":" in token
+        or "host" in low
+        or "user-agent" in low
+        or "cookie" in low
+        or "header" in low
+    )
+
+
+def _looks_like_body_clause(clause: Clause) -> bool:
+    token = ""
+    if isinstance(clause, ContentMatch):
+        token = (getattr(clause, "decoded", "") or getattr(clause, "raw", "") or "").strip()
+    elif isinstance(clause, PcreMatch):
+        token = getattr(clause, "raw", "") or ""
+
+    if not token:
+        return False
+
+    low = token.lower()
+    return (
+        "=" in token
+        or "&" in token
+        or "request_body" in low
+        or "content-disposition" in low
+        or "multipart" in low
+    )
+
+
 def split_clauses_for_http_generation(clauses: List[Clause]) -> Dict[str, Any]:
-    """
-    按 sticky buffer 对 HTTP 请求生成进行分桶。
-    关键点：
-    1. 保留每个 buffer 内部原始顺序。
-    2. 对具名请求头单独分桶，避免 http.user_agent 被错误落到 body。
-    3. 未显式指定 buffer 的 pkt 仍保守放 body。
-    4. 记录每个 buffer 上的 transforms，供 http_fixed.py 使用。
-    """
     per_buf: DefaultDict[str, List[Clause]] = defaultdict(list)
     transforms_by_buf: Dict[str, List[str]] = {}
     cur_buf: str = "pkt"
@@ -89,6 +94,7 @@ def split_clauses_for_http_generation(clauses: List[Clause]) -> Dict[str, Any]:
         "response_line": [],
         "file": [],
         "other": [],
+        "_mapping_suspect": False,
         "_buffer_transforms": transforms_by_buf,
     }
 
@@ -99,10 +105,18 @@ def split_clauses_for_http_generation(clauses: List[Clause]) -> Dict[str, Any]:
             target = TARGET_BUCKET_BY_BUFFER.get(effective_buf)
             if target is not None:
                 buckets[target].append(clause)
-            elif effective_buf == "pkt":
-                buckets["other"].append(clause)
-            else:
-                buckets["other"].append(clause)
+                continue
+
+            if effective_buf == "pkt_data":
+                if _looks_like_header_clause(clause):
+                    buckets["header"].append(clause)
+                elif _looks_like_body_clause(clause):
+                    buckets["body"].append(clause)
+                else:
+                    buckets["_mapping_suspect"] = True
+                continue
+
+            buckets["other"].append(clause)
 
     return buckets
 

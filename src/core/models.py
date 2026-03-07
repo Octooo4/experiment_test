@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 HttpBufferLiteral = Literal[
     # fallback
     "pkt",
+    "pkt_data",
 
     # request line / uri
     "http.method",

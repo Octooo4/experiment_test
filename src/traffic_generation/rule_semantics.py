@@ -19,29 +19,16 @@ def has_explicit_buffer_switch(clauses: List[object]) -> bool:
 
 
 REQUEST_SIDE_BUFFERS = {
-    "pkt",
+    "pkt_data",
     "http.method",
     "http.uri",
     "http.uri.raw",
     "http.request_line",
-    "http.start",
-    "http.protocol",
     "http.header",
-    "http.header.raw",
     "http.header_names",
-    "http.host",
-    "http.host.raw",
-    "http.user_agent",
-    "http.referer",
-    "http.referer.raw",
-    "http.accept",
-    "http.accept_lang",
-    "http.accept_enc",
-    "http.connection",
-    "http.content_type",
-    "http.content_len",
     "http.cookie",
-    "http.cookie.raw",
+    "http.user_agent",
+    "http.host",
     "http.request_body",
 }
 
@@ -130,49 +117,8 @@ def _split_domain_and_path(tok: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def classify_http_rule_strategy(clauses: List[object]) -> Literal["sticky", "recoverable_raw", "raw_text"]:
-    if has_explicit_buffer_switch(clauses):
-        return "sticky"
-
-    contents = [c for c in clauses if isinstance(c, ContentMatch) and not getattr(c, "negated", False)]
-    pcres = [
-        c
-        for c in clauses
-        if PcreMatch is not None and isinstance(c, PcreMatch) and not getattr(c, "negated", False)
-    ]
-
-    decoded_tokens = [(getattr(c, "decoded", "") or getattr(c, "raw", "")).strip() for c in contents]
-    decoded_tokens = [t for t in decoded_tokens if t]
-
-    for t in decoded_tokens:
-        low = t.lower()
-        if (
-            low.startswith("host:")
-            or low.startswith("user-agent:")
-            or low.startswith("referer:")
-            or low.startswith("cookie:")
-            or low.startswith("accept:")
-            or low.startswith("connection:")
-        ):
-            return "recoverable_raw"
-        if t.upper() in {"GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH"}:
-            return "recoverable_raw"
-
-    if any(t.lower() in {"host:", "user-agent:", "referer:", "cookie:"} for t in decoded_tokens):
-        return "recoverable_raw"
-
-    for c in contents:
-        if (
-            getattr(c, "distance", None) is not None
-            or getattr(c, "within", None) is not None
-            or getattr(c, "offset", None) is not None
-            or getattr(c, "depth", None) is not None
-        ):
-            return "raw_text"
-
-    if pcres:
-        return "raw_text"
-
-    return "raw_text"
+    _ = clauses
+    return "sticky"
 
 
 def extract_header_candidates_from_raw_clauses(
