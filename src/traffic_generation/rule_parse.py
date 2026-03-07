@@ -2,14 +2,387 @@ from __future__ import annotations
 
 import re
 import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from core.models import BSizeMatch
+from core.models import (
+    BSizeMatch,
+    BufferSwitch,
+    ContentMatch,
+    DSizeMatch,
+    FlowTerm,
+    IsDataAtMatch,
+    PcreMatch,
+    RuleBody,
+    RuleHeader,
+    SuricataRule,
+)
+from parsuricata import parse_rules as _parse_raw_rules
 
 CONTINUE_ON_ERROR: bool = False
 
 _PC_RE = re.compile(r'^\s*"?\s*/(?P<body>(?:\\/|[^/])*)/(?P<flags>[A-Za-z]*)\s*"?\s*$')
+_DSIZE_RE = re.compile(r"^\s*(?P<op>>=|<=|<>|>|<|=)?\s*(?P<a>\d+)\s*(?:<>\s*(?P<b>\d+)\s*)?$")
 
+# 与 adapter 保持一致
+STICKY_BUFFER_KEYWORDS = {
+    "http.method": "http.method",
+    "http.uri": "http.uri",
+    "http.uri.raw": "http.uri.raw",
+    "http.request_line": "http.request_line",
+    "http.start": "http.start",
+    "http.protocol": "http.protocol",
+    "http.header": "http.header",
+    "http.header.raw": "http.header.raw",
+    "http.header_names": "http.header_names",
+    "http.host": "http.host",
+    "http.host.raw": "http.host.raw",
+    "http.user_agent": "http.user_agent",
+    "http.referer": "http.referer",
+    "http.referer.raw": "http.referer.raw",
+    "http.accept": "http.accept",
+    "http.accept_lang": "http.accept_lang",
+    "http.accept_enc": "http.accept_enc",
+    "http.connection": "http.connection",
+    "http.content_type": "http.content_type",
+    "http.content_len": "http.content_len",
+    "http.cookie": "http.cookie",
+    "http.cookie.raw": "http.cookie.raw",
+    "http.request_body": "http.request_body",
+    "http.response_body": "http.response_body",
+    "http.stat_code": "http.stat_code",
+    "http.stat_msg": "http.stat_msg",
+    "http.response_line": "http.response_line",
+    "file.data": "file.data",
+    "http_method": "http.method",
+    "http_uri": "http.uri",
+    "http_raw_uri": "http.uri.raw",
+    "http_request_line": "http.request_line",
+    "http_start": "http.start",
+    "http_protocol": "http.protocol",
+    "http_header": "http.header",
+    "http_raw_header": "http.header.raw",
+    "http_header_names": "http.header_names",
+    "http_host": "http.host",
+    "http_raw_host": "http.host.raw",
+    "http_user_agent": "http.user_agent",
+    "http_referer": "http.referer",
+    "http_raw_referer": "http.referer.raw",
+    "http_accept": "http.accept",
+    "http_accept_lang": "http.accept_lang",
+    "http_accept_enc": "http.accept_enc",
+    "http_connection": "http.connection",
+    "http_content_type": "http.content_type",
+    "http_content_len": "http.content_len",
+    "http_cookie": "http.cookie",
+    "http_raw_cookie": "http.cookie.raw",
+    "http_client_body": "http.request_body",
+    "http_request_body": "http.request_body",
+    "http_response_body": "http.response_body",
+}
+
+LEGACY_BUFFER_MODIFIERS = {
+    "http_method": "http.method",
+    "http_uri": "http.uri",
+    "http_raw_uri": "http.uri.raw",
+    "http_request_line": "http.request_line",
+    "http_header": "http.header",
+    "http_raw_header": "http.header.raw",
+    "http_header_names": "http.header_names",
+    "http_host": "http.host",
+    "http_raw_host": "http.host.raw",
+    "http_user_agent": "http.user_agent",
+    "http_referer": "http.referer",
+    "http_raw_referer": "http.referer.raw",
+    "http_accept": "http.accept",
+    "http_accept_lang": "http.accept_lang",
+    "http_accept_enc": "http.accept_enc",
+    "http_connection": "http.connection",
+    "http_content_type": "http.content_type",
+    "http_content_len": "http.content_len",
+    "http_cookie": "http.cookie",
+    "http_raw_cookie": "http.cookie.raw",
+    "http_client_body": "http.request_body",
+    "http_request_body": "http.request_body",
+    "http_response_body": "http.response_body",
+    "file_data": "file.data",
+}
+
+SUPPORTED_KEYWORDS = {
+    "msg", "sid", "rev", "flow", "content", "pcre", "isdataat", "dsize", "bsize",
+    "nocase", "fast_pattern", "startswith", "endswith", "offset", "depth", "distance", "within",
+    "header_lowercase", "to_lowercase",
+    *STICKY_BUFFER_KEYWORDS.keys(),
+    *LEGACY_BUFFER_MODIFIERS.keys(),
+}
+
+
+@dataclass
+class RawOption:
+    keyword: str
+    value: Optional[str]
+    negated: bool
+
+
+@dataclass
+class Rule:
+    header: RuleHeader
+    raw_text: str = ""
+    sid: str = ""
+    msg: str = ""
+    flow: Optional[FlowTerm] = None
+    raw_options: List[RawOption] = field(default_factory=list)
+    content: List[ContentMatch] = field(default_factory=list)
+    pcre: List[PcreMatch] = field(default_factory=list)
+    sticky_buffers: List[str] = field(default_factory=list)
+    legacy_modifiers: List[str] = field(default_factory=list)
+    unsupported_keywords: List[str] = field(default_factory=list)
+
+
+def _settings_text(obj: object) -> str:
+    return "" if obj is None else str(obj)
+
+
+def _is_negated_setting(obj: object) -> bool:
+    return bool(getattr(obj, "is_negated", False))
+
+
+def decode_hex_blocks(s: str) -> str:
+    def repl(m: re.Match) -> str:
+        b = bytes(int(x, 16) for x in m.group(1).split())
+        return b.decode("latin-1", errors="replace")
+
+    return re.sub(r"\|([0-9A-Fa-f ]+)\|", repl, s)
+
+
+def parse_flow(setting_obj: object) -> FlowTerm:
+    text = _settings_text(setting_obj)
+    parts = [p.strip().lower() for p in text.split(",") if p.strip()]
+    return FlowTerm(to_server=("to_server" in parts), to_client=("to_client" in parts), established=("established" in parts))
+
+
+def parse_dsize(text: str) -> DSizeMatch:
+    m = _DSIZE_RE.match(text.strip())
+    if not m:
+        raise ValueError(f"invalid dsize: {text!r}")
+    op = m.group("op") or "="
+    a = int(m.group("a"))
+    b = m.group("b")
+    return DSizeMatch(op=op, a=a, b=(int(b) if b is not None else None))
+
+
+def parse_bsize(text: str) -> BSizeMatch:
+    m = _DSIZE_RE.match(text.strip())
+    if not m:
+        raise ValueError(f"invalid bsize: {text!r}")
+    op = m.group("op") or "="
+    a = int(m.group("a"))
+    b = m.group("b")
+    return BSizeMatch(op=op, a=a, b=(int(b) if b is not None else None))
+
+
+def parse_isdataat(setting_obj: object) -> IsDataAtMatch:
+    neg = _is_negated_setting(setting_obj)
+    text = _settings_text(setting_obj).strip()
+    if text.startswith("!"):
+        neg = True
+        text = text[1:].strip()
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if not parts:
+        raise ValueError(f"invalid isdataat: {text!r}")
+    offset = int(parts[0])
+    return IsDataAtMatch(
+        offset=offset,
+        relative=any(p.lower() == "relative" for p in parts[1:]),
+        rawbytes=any(p.lower() == "rawbytes" for p in parts[1:]),
+        negated=neg,
+    )
+
+
+def _split_rule_candidates(text: str) -> List[str]:
+    chunks: List[str] = []
+    current: List[str] = []
+    in_quote = False
+    esc = False
+    depth = 0
+
+    for ch in text:
+        current.append(ch)
+        if in_quote:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_quote = False
+            continue
+        if ch == '"':
+            in_quote = True
+            continue
+        if ch == '(':
+            depth += 1
+        elif ch == ')' and depth > 0:
+            depth -= 1
+            if depth == 0:
+                candidate = "".join(current).strip()
+                if candidate:
+                    chunks.append(candidate)
+                current = []
+    trailing = "".join(current).strip()
+    if trailing and trailing.lower().startswith(("alert ", "drop ", "reject ", "pass ", "log ")):
+        chunks.append(trailing)
+    return chunks
+
+
+def _build_rule_ast(raw_rule: object, raw_text: str) -> Rule:
+    header = RuleHeader(
+        action=str(getattr(raw_rule, "action", "") or ""),
+        protocol=str(getattr(raw_rule, "protocol", "") or ""),
+        src=str(getattr(raw_rule, "src", "") or ""),
+        src_port=str(getattr(raw_rule, "src_port", "") or ""),
+        direction=str(getattr(raw_rule, "direction", "->") or "->"),
+        dst=str(getattr(raw_rule, "dst", "") or ""),
+        dst_port=str(getattr(raw_rule, "dst_port", "") or ""),
+    )
+    ast = Rule(header=header, raw_text=raw_text)
+
+    for opt in (getattr(raw_rule, "options", []) or []):
+        keyword = str(getattr(opt, "keyword", "") or "")
+        settings = getattr(opt, "settings", None)
+        negated = _is_negated_setting(settings)
+        value = _settings_text(settings) if settings is not None else None
+
+        ast.raw_options.append(RawOption(keyword=keyword, value=value, negated=negated))
+
+        if keyword not in SUPPORTED_KEYWORDS and keyword not in ast.unsupported_keywords:
+            ast.unsupported_keywords.append(keyword)
+
+        if keyword == "msg" and value is not None:
+            ast.msg = value
+        elif keyword == "sid" and value is not None:
+            ast.sid = value
+        elif keyword == "flow" and settings is not None:
+            ast.flow = parse_flow(settings)
+        elif keyword == "content" and settings is not None:
+            raw_text = value.strip()
+            c_neg = negated
+            if raw_text.startswith("!"):
+                c_neg = True
+                raw_text = raw_text[1:].lstrip()
+            if len(raw_text) >= 2 and raw_text[0] == '"' and raw_text[-1] == '"':
+                raw_text = raw_text[1:-1]
+            ast.content.append(ContentMatch(raw=raw_text, decoded=decode_hex_blocks(raw_text), negated=c_neg))
+        elif keyword == "pcre" and settings is not None:
+            ast.pcre.append(PcreMatch(raw=value, negated=negated, buffer=None))
+        elif keyword in STICKY_BUFFER_KEYWORDS and settings is None:
+            ast.sticky_buffers.append(STICKY_BUFFER_KEYWORDS[keyword])
+        elif keyword in LEGACY_BUFFER_MODIFIERS:
+            ast.legacy_modifiers.append(LEGACY_BUFFER_MODIFIERS[keyword])
+
+    return ast
+
+
+def parse_rules(path: str | Path) -> List[Rule]:
+    text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    rules: List[Rule] = []
+    for candidate in _split_rule_candidates(text):
+        try:
+            parsed = _parse_raw_rules(candidate)
+        except Exception:
+            continue
+        if not parsed:
+            continue
+        rules.append(_build_rule_ast(parsed[0], candidate))
+    return rules
+
+
+def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
+    body = RuleBody(msg=ast.msg, sid=ast.sid, flow=ast.flow)
+    last_content: Optional[ContentMatch] = None
+    last_pcre: Optional[PcreMatch] = None
+    last_mod_target: Optional[str] = None
+    last_buffer_switch: Optional[BufferSwitch] = None
+
+    content_idx = 0
+    pcre_idx = 0
+
+    for opt in ast.raw_options:
+        k, v = opt.keyword, opt.value
+
+        if k in {"msg", "sid", "flow", "rev"}:
+            if k == "rev" and v is not None:
+                body.rev = v
+            continue
+        if k in STICKY_BUFFER_KEYWORDS and v is None:
+            bs = BufferSwitch(buffer=STICKY_BUFFER_KEYWORDS[k])
+            body.clauses.append(bs)
+            last_buffer_switch = bs
+            continue
+        if k == "header_lowercase":
+            if last_buffer_switch is not None and "header_lowercase" not in last_buffer_switch.transforms:
+                last_buffer_switch.transforms.append("header_lowercase")
+            continue
+        if k == "to_lowercase":
+            if last_buffer_switch is not None and "to_lowercase" not in last_buffer_switch.transforms:
+                last_buffer_switch.transforms.append("to_lowercase")
+            continue
+        if k == "content" and v is not None:
+            cm = ast.content[content_idx] if content_idx < len(ast.content) else ContentMatch(raw=v, decoded=decode_hex_blocks(v), negated=opt.negated)
+            content_idx += 1
+            body.clauses.append(cm)
+            last_content = cm
+            last_mod_target = "content"
+            continue
+        if k == "pcre" and v is not None:
+            pm = ast.pcre[pcre_idx] if pcre_idx < len(ast.pcre) else PcreMatch(raw=v, negated=opt.negated)
+            pcre_idx += 1
+            body.clauses.append(pm)
+            last_pcre = pm
+            last_mod_target = "pcre"
+            continue
+        if k == "isdataat" and v is not None:
+            body.clauses.append(parse_isdataat(v))
+            continue
+        if k == "dsize" and v is not None:
+            body.clauses.append(parse_dsize(v))
+            continue
+        if k == "bsize" and v is not None:
+            body.clauses.append(parse_bsize(v))
+            continue
+        if k == "nocase":
+            if last_mod_target == "content" and last_content is not None:
+                last_content.nocase = True
+            elif last_mod_target == "pcre" and last_pcre is not None:
+                last_pcre.nocase = True
+            continue
+        if k == "fast_pattern" and last_content is not None:
+            last_content.fast_pattern = True
+            continue
+        if k == "startswith" and last_content is not None:
+            last_content.startswith = True
+            continue
+        if k == "endswith" and last_content is not None:
+            last_content.endswith = True
+            continue
+        if k in LEGACY_BUFFER_MODIFIERS:
+            mapped = LEGACY_BUFFER_MODIFIERS[k]
+            if last_mod_target == "content" and last_content is not None:
+                last_content.buffer = mapped
+            elif last_mod_target == "pcre" and last_pcre is not None:
+                last_pcre.buffer = mapped
+            continue
+        if k in {"offset", "depth", "distance", "within"} and v is not None and last_content is not None:
+            try:
+                iv = int(v)
+            except Exception:
+                continue
+            setattr(last_content, k, iv)
+
+    return SuricataRule(header=ast.header, body=body)
+
+
+# --- existing helpers below ---
 
 def sanitize_pcre(pcre: str, sid: str) -> str:
     s = pcre
