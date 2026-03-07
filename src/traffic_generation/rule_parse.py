@@ -118,6 +118,20 @@ SUPPORTED_KEYWORDS = {
     *LEGACY_BUFFER_MODIFIERS.keys(),
 }
 
+# 这些关键字通常只承载分类/注释/告警展示信息，不改变内容匹配语义。
+# 在 to_server 请求生成阶段将其视为“已知但忽略”，避免误报 UNSUPPORTED_KEYWORD。
+NON_BLOCKING_METADATA_KEYWORDS = {
+    "reference",
+    "metadata",
+    "classtype",
+    "priority",
+    "target",
+    "tag",
+    "threshold",
+}
+
+SUPPORTED_KEYWORDS = SUPPORTED_KEYWORDS | NON_BLOCKING_METADATA_KEYWORDS
+
 
 @dataclass
 class RawOption:
