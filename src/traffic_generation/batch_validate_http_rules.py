@@ -14,9 +14,11 @@ from parse.buckets_sorting import clauses_to_terms, split_clauses_for_http_gener
 from traffic_generation.buffer_solver import synthesize_bucket_bytes
 from traffic_generation.http_builder import (
     build_http_request_from_raw_clauses,
+    build_http_request_from_buckets,
     build_raw_http_text_request_from_clauses,
     build_request,
     build_request_for_rule,
+    ensure_common_headers,
     render_http_request,
 )
 from traffic_generation.traffic_emit import send_raw_http_bytes
@@ -319,27 +321,46 @@ def build_fallback_attempts(rule, target_server: str) -> list[tuple[str, bytes]]
     Plan path stays primary; these only run after a miss or unsat.
     """
     attempts: list[tuple[str, bytes]] = []
-    strategy, req_obj, raw_bytes = build_request_for_rule(rule, target_server)
-    rendered = _render_fallback_bytes(req_obj, raw_bytes)
-    if rendered:
-        attempts.append((strategy, rendered))
 
-    # For sticky rules, also try raw recoveries explicitly to avoid getting stuck
-    # in a single sticky synthesis path.
-    if strategy == "sticky":
-        try:
-            raw_req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
-            raw_rendered = render_http_request(raw_req).encode("latin-1", errors="replace")
-            if raw_rendered and raw_rendered != rendered:
-                attempts.append(("recoverable_raw", raw_rendered))
-        except Exception:
-            pass
-        try:
-            raw_text = build_raw_http_text_request_from_clauses(rule.body.clauses, sid=rule.body.sid)
-            if raw_text and raw_text != rendered:
-                attempts.append(("raw_text", raw_text))
-        except Exception:
-            pass
+    def add_attempt(name: str, payload: bytes) -> None:
+        if not payload:
+            return
+        for n, p in attempts:
+            if n == name and p == payload:
+                return
+        if any(p == payload for _, p in attempts):
+            return
+        attempts.append((name, payload))
+
+    # 1) Plan-aligned bucket synthesis as first fallback candidate, useful for many
+    # host/uri sticky misses that got classified into raw_text paths.
+    try:
+        buckets = split_clauses_for_http_generation(rule.body.clauses)
+        if not buckets.get("_mapping_suspect"):
+            req_bucket = build_http_request_from_buckets(buckets, sid=rule.body.sid)
+            ensure_common_headers(target_server, req_bucket)
+            add_attempt("sticky_bucket", render_http_request(req_bucket).encode("latin-1", errors="replace"))
+    except Exception:
+        pass
+
+    # 2) Existing strategy-selected legacy builder.
+    strategy, req_obj, raw_bytes = build_request_for_rule(rule, target_server)
+    add_attempt(strategy, _render_fallback_bytes(req_obj, raw_bytes))
+
+    # 3) Force recoverable/raw builders regardless of strategy to avoid
+    # single-path raw_text misses.
+    try:
+        raw_req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
+        ensure_common_headers(target_server, raw_req)
+        add_attempt("recoverable_raw", render_http_request(raw_req).encode("latin-1", errors="replace"))
+    except Exception:
+        pass
+    try:
+        raw_text = build_raw_http_text_request_from_clauses(rule.body.clauses, sid=rule.body.sid)
+        add_attempt("raw_text", raw_text)
+    except Exception:
+        pass
+
     return attempts
 
 

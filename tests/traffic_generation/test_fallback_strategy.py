@@ -18,6 +18,14 @@ def test_build_fallback_attempts_expands_for_sticky(monkeypatch):
     rule = SimpleNamespace(body=SimpleNamespace(clauses=[], sid="1"))
 
     monkeypatch.setattr(
+        "traffic_generation.batch_validate_http_rules.split_clauses_for_http_generation",
+        lambda _clauses: {},
+    )
+    monkeypatch.setattr(
+        "traffic_generation.batch_validate_http_rules.build_http_request_from_buckets",
+        lambda _buckets, sid="": SimpleNamespace(),
+    )
+    monkeypatch.setattr(
         "traffic_generation.batch_validate_http_rules.build_request_for_rule",
         lambda _rule, _server: ("sticky", None, b"A"),
     )
@@ -30,9 +38,17 @@ def test_build_fallback_attempts_expands_for_sticky(monkeypatch):
         lambda _req: "B",
     )
     monkeypatch.setattr(
+        "traffic_generation.batch_validate_http_rules.ensure_common_headers",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         "traffic_generation.batch_validate_http_rules.build_raw_http_text_request_from_clauses",
         lambda _clauses, sid="": b"C",
     )
 
     attempts = build_fallback_attempts(rule, "http://x")
-    assert attempts == [("sticky", b"A"), ("recoverable_raw", b"B"), ("raw_text", b"C")]
+    assert attempts == [
+        ("sticky_bucket", b"B"),
+        ("sticky", b"A"),
+        ("raw_text", b"C"),
+    ]
