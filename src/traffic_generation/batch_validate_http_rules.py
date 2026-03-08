@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -11,24 +12,31 @@ from typing import Any, Optional
 
 from parse.buckets_sorting import clauses_to_terms, split_clauses_for_http_generation
 from traffic_generation.buffer_solver import synthesize_bucket_bytes
-from traffic_generation.http_fixed import (
-    build_transaction_artifacts_for_rule,
+from traffic_generation.http_builder import (
+    build_http_request_from_raw_clauses,
+    build_raw_http_text_request_from_clauses,
+    build_request,
+    build_request_for_rule,
     render_http_request,
-    send_http_request,
-    send_raw_http_bytes,
 )
+from traffic_generation.traffic_emit import send_raw_http_bytes
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
-from traffic_generation.rule_semantics import get_rule_admission_skip_reason
+from traffic_generation.rule_semantics import classify_http_rule_strategy, extract_http_plan, get_rule_admission_skip_reason
 
 SKIP_NOT_ALERT_HTTP = "SKIP_NOT_ALERT_HTTP"
 SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY = "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+SKIP_UNSUPPORTED_KEYWORD = "SKIP_UNSUPPORTED_KEYWORD"
 UNSUPPORTED_KEYWORD = "UNSUPPORTED_KEYWORD"
 UNSUPPORTED_PCRE = "UNSUPPORTED_PCRE"
 CONSTRAINT_UNSAT = "CONSTRAINT_UNSAT"
 BUILD_REQUEST_FAILED = "BUILD_REQUEST_FAILED"
 EMIT_FAILED = "EMIT_FAILED"
 SURICATA_FAILED = "SURICATA_FAILED"
-NO_ALERT = "NO_ALERT"
+NO_ALERT_FOR_SID = "NO_ALERT_FOR_SID"
+FLOW_NOT_ESTABLISHED = "FLOW_NOT_ESTABLISHED"
+HTTP_PARSE_SUSPECT = "HTTP_PARSE_SUSPECT"
+BUFFER_MAPPING_SUSPECT = "BUFFER_MAPPING_SUSPECT"
+UNSUPPORTED_BINARY_HTTP_FIELD = "UNSUPPORTED_BINARY_HTTP_FIELD"
 
 
 @dataclass
@@ -219,10 +227,44 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         else:
             solver_backends[bucket_name] = "z3_or_greedy"
 
+    tx_plan = extract_http_plan(rule)
+    tx_plan_dict = {
+        "flow": {
+            "to_server": tx_plan.flow.to_server,
+            "established": tx_plan.flow.established,
+            "not_established": tx_plan.flow.not_established,
+        },
+        "request_segments": [
+            {
+                "buffer": seg.buffer,
+                "matches": [
+                    {
+                        "kind": m.kind,
+                        "raw": m.raw,
+                        "modifiers": {
+                            "nocase": m.modifiers.nocase,
+                            "startswith": m.modifiers.startswith,
+                            "endswith": m.modifiers.endswith,
+                            "offset": m.modifiers.offset,
+                            "depth": m.modifiers.depth,
+                            "distance": m.modifiers.distance,
+                            "within": m.modifiers.within,
+                            "rawbytes": m.modifiers.rawbytes,
+                            "negated": m.modifiers.negated,
+                        },
+                    }
+                    for m in seg.matches
+                ],
+            }
+            for seg in tx_plan.request_segments
+        ],
+    }
+
     return {
         "sid": rule.body.sid,
         "msg": rule.body.msg,
         "flow": rule.body.flow.model_dump() if rule.body.flow else None,
+        "transaction_plan": tx_plan_dict,
         "unsupported_keywords": sorted(set(rule_ast.unsupported_keywords)),
         "mapping_suspect": bool(buckets.get("_mapping_suspect")),
         "bucket_terms": bucket_terms,
@@ -232,6 +274,23 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
     }
 
 
+
+
+def normalize_rule_for_suricata_eval(rule_text: str) -> str:
+    """
+    归一化 rule header，避免对 HOME_NET/EXTERNAL_NET/HTTP_PORTS 变量配置强依赖。
+    仅用于离线回放验证，不改动 options。
+    """
+    text = (rule_text or "").strip()
+    m = re.match(r"^\s*(alert|pass|drop|reject|log)\s+(\S+)\s+\S+\s+\S+\s+(->|<>)\s+\S+\s+\S+\s*\(", text, flags=re.IGNORECASE)
+    if not m:
+        return text
+    action = m.group(1)
+    protocol = m.group(2)
+    direction = m.group(3)
+    normalized = f"{action} {protocol} any any {direction} any any ("
+    return normalized + text[m.end():]
+
 def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     sid_dir = root / f"{sid}_{index:05d}"
     sid_dir.mkdir(parents=True, exist_ok=True)
@@ -240,6 +299,80 @@ def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     (sid_dir / "eve.json").write_text("", encoding="utf-8")
     return sid_dir
 
+
+
+
+def should_try_legacy_fallback(strategy: str) -> bool:
+    # Keep plan path primary, but allow one legacy retry for all known HTTP build strategies.
+    return strategy in {"sticky", "recoverable_raw", "raw_text"}
+
+
+def _render_fallback_bytes(req_obj, raw_bytes: Optional[bytes]) -> bytes:
+    if req_obj is not None:
+        return render_http_request(req_obj).encode("latin-1", errors="replace")
+    return raw_bytes or b""
+
+
+def build_fallback_attempts(rule, target_server: str) -> list[tuple[str, bytes]]:
+    """
+    Build fallback request candidates in descending preference.
+    Plan path stays primary; these only run after a miss or unsat.
+    """
+    attempts: list[tuple[str, bytes]] = []
+    strategy, req_obj, raw_bytes = build_request_for_rule(rule, target_server)
+    rendered = _render_fallback_bytes(req_obj, raw_bytes)
+    if rendered:
+        attempts.append((strategy, rendered))
+
+    # For sticky rules, also try raw recoveries explicitly to avoid getting stuck
+    # in a single sticky synthesis path.
+    if strategy == "sticky":
+        try:
+            raw_req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
+            raw_rendered = render_http_request(raw_req).encode("latin-1", errors="replace")
+            if raw_rendered and raw_rendered != rendered:
+                attempts.append(("recoverable_raw", raw_rendered))
+        except Exception:
+            pass
+        try:
+            raw_text = build_raw_http_text_request_from_clauses(rule.body.clauses, sid=rule.body.sid)
+            if raw_text and raw_text != rendered:
+                attempts.append(("raw_text", raw_text))
+        except Exception:
+            pass
+    return attempts
+
+
+def run_fallback_attempts(
+    cfg: ValidationConfig,
+    rule,
+    request_bytes: bytes,
+    req_path: Path,
+    pcap_path: Path,
+    rule_path: Path,
+    status_code: Optional[int],
+) -> tuple[bool, Path, Optional[int], str]:
+    """Run fallback attempts and return (hit, eve_path, status_code, solver_backend)."""
+    hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, pcap_path.parent / "suricata_out")
+    solver_backend = "plan"
+    if hit:
+        return hit, produced_eve_path, status_code, solver_backend
+
+    for fallback_strategy, fb_bytes in build_fallback_attempts(rule, cfg.target_server):
+        if not fb_bytes or fb_bytes == request_bytes:
+            continue
+        req_path.write_bytes(fb_bytes)
+        solver_backend = f"plan_fallback_{fallback_strategy}"
+        capture_proc = start_capture(cfg, pcap_path)
+        try:
+            status_code, _ = send_raw_http_bytes(cfg.target_server, fb_bytes, timeout=cfg.request_timeout)
+            time.sleep(cfg.post_request_sleep_seconds)
+        finally:
+            stop_capture(capture_proc)
+        hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, pcap_path.parent / "suricata_out")
+        if hit:
+            break
+    return hit, produced_eve_path, status_code, solver_backend
 
 def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: int) -> ValidationResult:
     sid = safe_sid(rule_ast.sid)
@@ -258,9 +391,11 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     eve_path = sid_dir / "eve.json"
     diagnose_path = sid_dir / "diagnose.json"
 
-    rule_path.write_text(rule_ast.raw_text.strip() + "\n", encoding="utf-8")
+    normalized_rule_text = normalize_rule_for_suricata_eval(rule_ast.raw_text)
+    rule_path.write_text(normalized_rule_text.strip() + "\n", encoding="utf-8")
 
     plan = build_rule_plan(rule, rule_ast)
+    tx_plan_obj = extract_http_plan(rule)
     write_json(plan_path, plan)
 
     unsupported_features: list[str] = []
@@ -286,14 +421,14 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         result = ValidationResult(
             sid=sid,
             msg=msg,
-            status="MISS",
-            miss_reason=UNSUPPORTED_KEYWORD,
+            status="SKIPPED",
+            skip_reason=SKIP_UNSUPPORTED_KEYWORD,
             request_path=str(req_path),
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
         )
-        write_json(diagnose_path, {"stage": "extract_plan", "reason": UNSUPPORTED_KEYWORD, "result": asdict(result)})
+        write_json(diagnose_path, {"stage": "extract_plan", "reason": SKIP_UNSUPPORTED_KEYWORD, "result": asdict(result)})
         return result
 
     if plan["unsupported_pcre"]:
@@ -311,47 +446,117 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         return result
 
     if plan["unsat_reasons"]:
-        result = ValidationResult(
-            sid=sid,
-            msg=msg,
-            status="MISS",
-            miss_reason=CONSTRAINT_UNSAT,
-            request_path=str(req_path),
-            pcap_path=str(pcap_path),
-            eve_path=str(eve_path),
-            unsupported_features=unsupported_features,
-        )
-        write_json(
-            diagnose_path,
-            {"stage": "solve", "reason": CONSTRAINT_UNSAT, "unsat": plan["unsat_reasons"], "result": asdict(result)},
-        )
-        return result
+        # Try legacy/raw fallbacks before declaring UNSAT final. This handles rules
+        # where plan constraints are stricter than what Suricata actually needs.
+        capture_proc: Optional[subprocess.Popen] = None
+        try:
+            status_code = None
+            hit = False
+            produced_eve_path = eve_path
+            solver_backend = None
+            for fallback_strategy, fb_bytes in build_fallback_attempts(rule, cfg.target_server):
+                if not fb_bytes:
+                    continue
+                req_path.write_bytes(fb_bytes)
+                solver_backend = f"fallback_{fallback_strategy}_after_unsat"
+                capture_proc = start_capture(cfg, pcap_path)
+                try:
+                    status_code, _ = send_raw_http_bytes(cfg.target_server, fb_bytes, timeout=cfg.request_timeout)
+                    time.sleep(cfg.post_request_sleep_seconds)
+                finally:
+                    stop_capture(capture_proc)
+                    capture_proc = None
+                hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+                if hit:
+                    break
+            if produced_eve_path.exists():
+                shutil.copy2(produced_eve_path, eve_path)
+            if hit:
+                result = ValidationResult(
+                    sid=sid,
+                    msg=msg,
+                    status="PASS",
+                    request_path=str(req_path),
+                    pcap_path=str(pcap_path),
+                    eve_path=str(eve_path),
+                    unsupported_features=unsupported_features,
+                    solver_backend=solver_backend,
+                )
+            else:
+                result = ValidationResult(
+                    sid=sid,
+                    msg=msg,
+                    status="MISS",
+                    miss_reason=CONSTRAINT_UNSAT,
+                    request_path=str(req_path),
+                    pcap_path=str(pcap_path),
+                    eve_path=str(eve_path),
+                    unsupported_features=unsupported_features,
+                    solver_backend=solver_backend,
+                )
+            write_json(
+                diagnose_path,
+                {
+                    "stage": "solve",
+                    "reason": CONSTRAINT_UNSAT,
+                    "unsat": plan["unsat_reasons"],
+                    "http_status": status_code,
+                    "result": asdict(result),
+                },
+            )
+            return result
+        except Exception as e:
+            if capture_proc is not None:
+                stop_capture(capture_proc)
+            result = ValidationResult(
+                sid=sid,
+                msg=msg,
+                status="MISS",
+                miss_reason=CONSTRAINT_UNSAT,
+                request_path=str(req_path),
+                pcap_path=str(pcap_path),
+                eve_path=str(eve_path),
+                unsupported_features=unsupported_features,
+            )
+            write_json(
+                diagnose_path,
+                {
+                    "stage": "solve",
+                    "reason": CONSTRAINT_UNSAT,
+                    "unsat": plan["unsat_reasons"],
+                    "error": str(e),
+                    "result": asdict(result),
+                },
+            )
+            return result
 
     capture_proc: Optional[subprocess.Popen] = None
     try:
-        strategy, req, raw_bytes = build_transaction_artifacts_for_rule(rule, cfg.target_server)
-        solver_backend = strategy
-
-        if req is not None:
-            request_bytes = render_http_request(req).encode("latin-1", errors="replace")
-            emit_path = req.path
-        elif raw_bytes is not None:
-            request_bytes = raw_bytes
-            emit_path = None
-        else:
-            raise RuntimeError("request and raw_bytes are both None")
+        default_host = cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"
+        request_bytes = build_request(tx_plan_obj, default_host=default_host)
+        solver_backend = "plan"
         req_path.write_bytes(request_bytes)
 
         capture_proc = start_capture(cfg, pcap_path)
-        if req is not None:
-            status_code, _ = send_http_request(cfg.target_server, req, timeout=cfg.request_timeout)
-        else:
-            status_code, _ = send_raw_http_bytes(cfg.target_server, request_bytes, timeout=cfg.request_timeout)
+        status_code, _ = send_raw_http_bytes(cfg.target_server, request_bytes, timeout=cfg.request_timeout)
         time.sleep(cfg.post_request_sleep_seconds)
         stop_capture(capture_proc)
         capture_proc = None
 
-        hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+        strategy = classify_http_rule_strategy(rule.body.clauses)
+        if should_try_legacy_fallback(strategy):
+            hit, produced_eve_path, status_code, solver_backend = run_fallback_attempts(
+                cfg=cfg,
+                rule=rule,
+                request_bytes=request_bytes,
+                req_path=req_path,
+                pcap_path=pcap_path,
+                rule_path=rule_path,
+                status_code=status_code,
+            )
+        else:
+            hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+
         if produced_eve_path.exists():
             shutil.copy2(produced_eve_path, eve_path)
 
@@ -359,7 +564,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             sid=sid,
             msg=msg,
             status="PASS" if hit else "MISS",
-            miss_reason=None if hit else NO_ALERT,
+            miss_reason=None if hit else NO_ALERT_FOR_SID,
             request_path=str(req_path),
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
@@ -372,7 +577,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 "stage": "complete",
                 "http_status": status_code,
                 "hit": hit,
-                "request_path": emit_path,
+                "request_path": str(req_path),
                 "result": asdict(result),
             },
         )
@@ -382,10 +587,17 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             stop_capture(capture_proc)
         message = str(e)
         reason = BUILD_REQUEST_FAILED
-        if "send_raw_http_bytes" in message or "Invalid server URL" in message:
+        low = message.lower()
+        if "buffer_mapping_suspect" in low:
+            reason = BUFFER_MAPPING_SUSPECT
+        elif "skip_http_binary_unsafe" in low or "binary" in low:
+            reason = UNSUPPORTED_BINARY_HTTP_FIELD
+        elif "send_raw_http_bytes" in message or "invalid server url" in low:
             reason = EMIT_FAILED
-        elif "suricata" in message.lower():
+        elif "suricata" in low:
             reason = SURICATA_FAILED
+        elif "parse" in low and "http" in low:
+            reason = HTTP_PARSE_SUSPECT
         result = ValidationResult(
             sid=sid,
             msg=msg,
