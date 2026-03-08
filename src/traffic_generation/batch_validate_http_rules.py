@@ -12,13 +12,14 @@ from typing import Any, Optional
 
 from parse.buckets_sorting import clauses_to_terms, split_clauses_for_http_generation
 from traffic_generation.buffer_solver import synthesize_bucket_bytes
-from traffic_generation.http_builder import build_request
-from traffic_generation.traffic_emit import send_raw_http_bytes
+from traffic_generation.http_builder import build_request, build_request_for_rule, render_http_request
+from traffic_generation.traffic_emit import send_raw_http_bytes, send_http_request
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
-from traffic_generation.rule_semantics import extract_http_plan, get_rule_admission_skip_reason
+from traffic_generation.rule_semantics import classify_http_rule_strategy, extract_http_plan, get_rule_admission_skip_reason
 
 SKIP_NOT_ALERT_HTTP = "SKIP_NOT_ALERT_HTTP"
 SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY = "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
+SKIP_UNSUPPORTED_KEYWORD = "SKIP_UNSUPPORTED_KEYWORD"
 UNSUPPORTED_KEYWORD = "UNSUPPORTED_KEYWORD"
 UNSUPPORTED_PCRE = "UNSUPPORTED_PCRE"
 CONSTRAINT_UNSAT = "CONSTRAINT_UNSAT"
@@ -338,14 +339,14 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         result = ValidationResult(
             sid=sid,
             msg=msg,
-            status="MISS",
-            miss_reason=UNSUPPORTED_KEYWORD,
+            status="SKIPPED",
+            skip_reason=SKIP_UNSUPPORTED_KEYWORD,
             request_path=str(req_path),
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
         )
-        write_json(diagnose_path, {"stage": "extract_plan", "reason": UNSUPPORTED_KEYWORD, "result": asdict(result)})
+        write_json(diagnose_path, {"stage": "extract_plan", "reason": SKIP_UNSUPPORTED_KEYWORD, "result": asdict(result)})
         return result
 
     if plan["unsupported_pcre"]:
@@ -381,7 +382,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
 
     capture_proc: Optional[subprocess.Popen] = None
     try:
-        request_bytes = build_request(tx_plan_obj, default_host=(cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"))
+        default_host = cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"
+        request_bytes = build_request(tx_plan_obj, default_host=default_host)
         solver_backend = "plan"
         req_path.write_bytes(request_bytes)
 
@@ -392,6 +394,34 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         capture_proc = None
 
         hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+
+        # Targeted fallback: if plan-only misses on non-sticky raw/recoverable rules, retry once
+        # with legacy builder to recover previous hit-rate while keeping plan as primary path.
+        if not hit:
+            strategy = classify_http_rule_strategy(rule.body.clauses)
+            if strategy in {"recoverable_raw", "raw_text"}:
+                fallback_strategy, req_obj, raw_fallback = build_request_for_rule(rule, cfg.target_server)
+                if req_obj is not None:
+                    fb_bytes = render_http_request(req_obj).encode("latin-1", errors="replace")
+                elif raw_fallback is not None:
+                    fb_bytes = raw_fallback
+                else:
+                    fb_bytes = b""
+
+                if fb_bytes:
+                    req_path.write_bytes(fb_bytes)
+                    solver_backend = f"plan_fallback_{fallback_strategy}"
+                    # recapture/verify fallback attempt
+                    capture_proc = start_capture(cfg, pcap_path)
+                    if req_obj is not None:
+                        status_code, _ = send_http_request(cfg.target_server, req_obj, timeout=cfg.request_timeout)
+                    else:
+                        status_code, _ = send_raw_http_bytes(cfg.target_server, fb_bytes, timeout=cfg.request_timeout)
+                    time.sleep(cfg.post_request_sleep_seconds)
+                    stop_capture(capture_proc)
+                    capture_proc = None
+                    hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+
         if produced_eve_path.exists():
             shutil.copy2(produced_eve_path, eve_path)
 

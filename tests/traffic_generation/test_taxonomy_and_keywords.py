@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from traffic_generation.batch_validate_http_rules import NO_ALERT_FOR_SID
+from traffic_generation.batch_validate_http_rules import NO_ALERT_FOR_SID, SKIP_UNSUPPORTED_KEYWORD
 from traffic_generation.rule_parse import parse_rules
 
 
@@ -20,3 +20,7 @@ def test_urilen_and_url_decode_not_marked_unsupported(tmp_path: Path):
     assert len(rules) == 1
     assert "urilen" not in rules[0].unsupported_keywords
     assert "url_decode" not in rules[0].unsupported_keywords
+
+
+def test_skip_unsupported_keyword_constant_name():
+    assert SKIP_UNSUPPORTED_KEYWORD == "SKIP_UNSUPPORTED_KEYWORD"

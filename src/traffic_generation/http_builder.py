@@ -247,6 +247,11 @@ def apply_named_header_buckets(headers: Dict[str, str], buckets: Dict[str, Any],
         if not value:
             continue
 
+        # Host suffix signatures often express only a dot-led tail (e.g. ".example.com" + endswith).
+        # Keep generated HTTP valid by prepending a label while preserving endswith semantics.
+        if bucket_name == "host" and value.startswith("."):
+            value = "www" + value
+
         transforms = transforms_by_buf.get(BUFFER_TO_HEADER_KEYWORD[bucket_name], [])
         final_name = header_name.lower() if "header_lowercase" in transforms else header_name
         set_header_case_insensitive(headers, final_name, value)

@@ -110,7 +110,7 @@ def extract_http_plan(rule) -> TransactionPlan:
             cur_segment.matches.append(
                 ContentMatchPlan(
                     kind="content",
-                    raw=getattr(clause, "raw", "") or "",
+                    raw=(getattr(clause, "decoded", None) or getattr(clause, "raw", "") or ""),
                     modifiers=MatchModifiers(
                         nocase=bool(getattr(clause, "nocase", False)),
                         offset=getattr(clause, "offset", None),
@@ -132,7 +132,7 @@ def extract_http_plan(rule) -> TransactionPlan:
             cur_segment.matches.append(
                 ContentMatchPlan(
                     kind="pcre",
-                    raw=getattr(clause, "raw", "") or "",
+                    raw=(getattr(clause, "decoded", None) or getattr(clause, "raw", "") or ""),
                     modifiers=MatchModifiers(
                         nocase=bool(getattr(clause, "nocase", False)),
                         negated=bool(getattr(clause, "negated", False)),
