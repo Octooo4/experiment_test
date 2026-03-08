@@ -114,6 +114,7 @@ SUPPORTED_KEYWORDS = {
     "msg", "sid", "rev", "flow", "content", "pcre", "isdataat", "dsize", "bsize",
     "nocase", "fast_pattern", "startswith", "endswith", "offset", "depth", "distance", "within",
     "header_lowercase", "to_lowercase",
+    "urilen", "url_decode",
     *STICKY_BUFFER_KEYWORDS.keys(),
     *LEGACY_BUFFER_MODIFIERS.keys(),
 }
