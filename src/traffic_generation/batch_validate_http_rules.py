@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -11,14 +12,10 @@ from typing import Any, Optional
 
 from parse.buckets_sorting import clauses_to_terms, split_clauses_for_http_generation
 from traffic_generation.buffer_solver import synthesize_bucket_bytes
-from traffic_generation.http_fixed import (
-    build_transaction_artifacts_for_rule,
-    render_http_request,
-    send_http_request,
-    send_raw_http_bytes,
-)
+from traffic_generation.http_builder import build_request
+from traffic_generation.traffic_emit import send_raw_http_bytes
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
-from traffic_generation.rule_semantics import get_rule_admission_skip_reason
+from traffic_generation.rule_semantics import extract_http_plan, get_rule_admission_skip_reason
 
 SKIP_NOT_ALERT_HTTP = "SKIP_NOT_ALERT_HTTP"
 SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY = "SKIP_OUT_OF_SCOPE_TO_SERVER_ONLY"
@@ -28,7 +25,11 @@ CONSTRAINT_UNSAT = "CONSTRAINT_UNSAT"
 BUILD_REQUEST_FAILED = "BUILD_REQUEST_FAILED"
 EMIT_FAILED = "EMIT_FAILED"
 SURICATA_FAILED = "SURICATA_FAILED"
-NO_ALERT = "NO_ALERT"
+NO_ALERT_FOR_SID = "NO_ALERT_FOR_SID"
+FLOW_NOT_ESTABLISHED = "FLOW_NOT_ESTABLISHED"
+HTTP_PARSE_SUSPECT = "HTTP_PARSE_SUSPECT"
+BUFFER_MAPPING_SUSPECT = "BUFFER_MAPPING_SUSPECT"
+UNSUPPORTED_BINARY_HTTP_FIELD = "UNSUPPORTED_BINARY_HTTP_FIELD"
 
 
 @dataclass
@@ -219,10 +220,42 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         else:
             solver_backends[bucket_name] = "z3_or_greedy"
 
+    tx_plan = extract_http_plan(rule)
+    tx_plan_dict = {
+        "flow": {
+            "to_server": tx_plan.flow.to_server,
+            "established": tx_plan.flow.established,
+            "not_established": tx_plan.flow.not_established,
+        },
+        "request_segments": [
+            {
+                "buffer": seg.buffer,
+                "matches": [
+                    {
+                        "kind": m.kind,
+                        "raw": m.raw,
+                        "modifiers": {
+                            "nocase": m.modifiers.nocase,
+                            "offset": m.modifiers.offset,
+                            "depth": m.modifiers.depth,
+                            "distance": m.modifiers.distance,
+                            "within": m.modifiers.within,
+                            "rawbytes": m.modifiers.rawbytes,
+                            "negated": m.modifiers.negated,
+                        },
+                    }
+                    for m in seg.matches
+                ],
+            }
+            for seg in tx_plan.request_segments
+        ],
+    }
+
     return {
         "sid": rule.body.sid,
         "msg": rule.body.msg,
         "flow": rule.body.flow.model_dump() if rule.body.flow else None,
+        "transaction_plan": tx_plan_dict,
         "unsupported_keywords": sorted(set(rule_ast.unsupported_keywords)),
         "mapping_suspect": bool(buckets.get("_mapping_suspect")),
         "bucket_terms": bucket_terms,
@@ -231,6 +264,23 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         "unsat_reasons": unsat_reasons,
     }
 
+
+
+
+def normalize_rule_for_suricata_eval(rule_text: str) -> str:
+    """
+    归一化 rule header，避免对 HOME_NET/EXTERNAL_NET/HTTP_PORTS 变量配置强依赖。
+    仅用于离线回放验证，不改动 options。
+    """
+    text = (rule_text or "").strip()
+    m = re.match(r"^\s*(alert|pass|drop|reject|log)\s+(\S+)\s+\S+\s+\S+\s+(->|<>)\s+\S+\s+\S+\s*\(", text, flags=re.IGNORECASE)
+    if not m:
+        return text
+    action = m.group(1)
+    protocol = m.group(2)
+    direction = m.group(3)
+    normalized = f"{action} {protocol} any any {direction} any any ("
+    return normalized + text[m.end():]
 
 def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     sid_dir = root / f"{sid}_{index:05d}"
@@ -258,9 +308,11 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     eve_path = sid_dir / "eve.json"
     diagnose_path = sid_dir / "diagnose.json"
 
-    rule_path.write_text(rule_ast.raw_text.strip() + "\n", encoding="utf-8")
+    normalized_rule_text = normalize_rule_for_suricata_eval(rule_ast.raw_text)
+    rule_path.write_text(normalized_rule_text.strip() + "\n", encoding="utf-8")
 
     plan = build_rule_plan(rule, rule_ast)
+    tx_plan_obj = extract_http_plan(rule)
     write_json(plan_path, plan)
 
     unsupported_features: list[str] = []
@@ -329,24 +381,12 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
 
     capture_proc: Optional[subprocess.Popen] = None
     try:
-        strategy, req, raw_bytes = build_transaction_artifacts_for_rule(rule, cfg.target_server)
-        solver_backend = strategy
-
-        if req is not None:
-            request_bytes = render_http_request(req).encode("latin-1", errors="replace")
-            emit_path = req.path
-        elif raw_bytes is not None:
-            request_bytes = raw_bytes
-            emit_path = None
-        else:
-            raise RuntimeError("request and raw_bytes are both None")
+        request_bytes = build_request(tx_plan_obj, default_host=(cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"))
+        solver_backend = "plan"
         req_path.write_bytes(request_bytes)
 
         capture_proc = start_capture(cfg, pcap_path)
-        if req is not None:
-            status_code, _ = send_http_request(cfg.target_server, req, timeout=cfg.request_timeout)
-        else:
-            status_code, _ = send_raw_http_bytes(cfg.target_server, request_bytes, timeout=cfg.request_timeout)
+        status_code, _ = send_raw_http_bytes(cfg.target_server, request_bytes, timeout=cfg.request_timeout)
         time.sleep(cfg.post_request_sleep_seconds)
         stop_capture(capture_proc)
         capture_proc = None
@@ -359,7 +399,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             sid=sid,
             msg=msg,
             status="PASS" if hit else "MISS",
-            miss_reason=None if hit else NO_ALERT,
+            miss_reason=None if hit else NO_ALERT_FOR_SID,
             request_path=str(req_path),
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
@@ -372,7 +412,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 "stage": "complete",
                 "http_status": status_code,
                 "hit": hit,
-                "request_path": emit_path,
+                "request_path": str(req_path),
                 "result": asdict(result),
             },
         )
@@ -382,10 +422,17 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             stop_capture(capture_proc)
         message = str(e)
         reason = BUILD_REQUEST_FAILED
-        if "send_raw_http_bytes" in message or "Invalid server URL" in message:
+        low = message.lower()
+        if "buffer_mapping_suspect" in low:
+            reason = BUFFER_MAPPING_SUSPECT
+        elif "skip_http_binary_unsafe" in low or "binary" in low:
+            reason = UNSUPPORTED_BINARY_HTTP_FIELD
+        elif "send_raw_http_bytes" in message or "invalid server url" in low:
             reason = EMIT_FAILED
-        elif "suricata" in message.lower():
+        elif "suricata" in low:
             reason = SURICATA_FAILED
+        elif "parse" in low and "http" in low:
+            reason = HTTP_PARSE_SUSPECT
         result = ValidationResult(
             sid=sid,
             msg=msg,

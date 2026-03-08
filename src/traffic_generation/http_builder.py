@@ -21,6 +21,7 @@ from traffic_generation.rule_parse import (
 from traffic_generation.rule_semantics import (
     _looks_like_host_fragment,
     _split_domain_and_path,
+    TransactionPlan,
     classify_http_rule_strategy,
     extract_header_candidates_from_raw_clauses,
 )
@@ -70,6 +71,8 @@ def _is_http_binary_unsafe(buckets: Dict[str, Any], sid: str) -> bool:
 class HttpRequestSpec(BaseModel):
     method: str = "GET"
     path: str = "/"
+    uri_raw: str = ""
+    uri_norm: str = ""
     headers: Dict[str, str] = Field(default_factory=dict)
     body: str = ""
 
@@ -91,7 +94,8 @@ def validate_http_request(req: HttpRequestSpec) -> None:
 
 
 def render_http_request(req: HttpRequestSpec) -> str:
-    lines = [f"{req.method} {req.path} HTTP/1.1"]
+    req_path = req.uri_raw or req.path or req.uri_norm or "/"
+    lines = [f"{req.method} {req_path} HTTP/1.1"]
     for k, v in req.headers.items():
         lines.append(f"{k}: {v}")
     lines.append("")
@@ -274,7 +278,10 @@ def rebucket_pcre_by_flags(buckets: Dict[str, Any]) -> Dict[str, Any]:
             if PcreMatch is not None and isinstance(clause, PcreMatch) and not getattr(clause, "negated", False):
                 _, flags = parse_pcre_raw(getattr(clause, "raw", ""))
                 dst = pcre_flags_to_bucket(flags)
-                if dst in moved and isinstance(moved[dst], list):
+                if dst == src:
+                    # 防止向正在遍历的同一列表回写，导致列表膨胀和近似死循环。
+                    keep.append(clause)
+                elif dst in moved and isinstance(moved[dst], list):
                     moved[dst].append(clause)
                 else:
                     keep.append(clause)
@@ -341,8 +348,24 @@ def build_http_request_from_raw_clauses(
             t = tok
             if t.lower().startswith("host:"):
                 t = t.split(":", 1)[1].strip()
+
+            # 形如 ".info" 的后缀优先并到已有 Host，适配 host 前缀+后缀拆分规则
             if t.startswith("."):
+                current_host = host_candidate
+                if current_host is None:
+                    for k, v in headers.items():
+                        if k.lower() == "host":
+                            current_host = (v or "").strip()
+                            break
+                if current_host:
+                    merged_host = current_host + t
+                    if host_candidate is not None:
+                        host_candidate = merged_host
+                    else:
+                        set_header_case_insensitive(headers, "Host", merged_host)
+                    continue
                 t = "www" + t
+
             if not has_header(headers, "Host") and not host_candidate:
                 host_candidate = t
             else:
@@ -408,7 +431,7 @@ def build_http_request_from_raw_clauses(
     if sid:
         headers["Rulesid"] = str(sid).strip()
 
-    return HttpRequestSpec(method=method, path=path, headers=headers, body=body)
+    return HttpRequestSpec(method=method, path=path, uri_raw=path, uri_norm=path, headers=headers, body=body)
 
 
 def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", default_method: str = "GET") -> HttpRequestSpec:
@@ -417,11 +440,15 @@ def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", defa
     method = default_method
     request_line_text = synthesize_bucket_text(buckets.get("request_line", []), sid, fill="A", strip_crlf=True)
     path = ""
+    uri_raw = ""
+    uri_norm = ""
     if request_line_text:
         m = re.match(r"^([A-Z]+)\s+(\S+)", request_line_text)
         if m:
             method = m.group(1)
             path = m.group(2)
+            uri_raw = path
+            uri_norm = path
 
     valid_methods = {"GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH"}
     for c in buckets.get("method", []):
@@ -450,10 +477,15 @@ def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", defa
                 if sample:
                     uri_parts.append(sample)
         if uri_parts:
-            path = _merge_uri_parts(uri_parts)
+            merged_uri = _merge_uri_parts(uri_parts)
+            path = merged_uri
+            uri_norm = merged_uri
+            uri_raw = merged_uri
         else:
             uri_text = synthesize_bucket_text(buckets.get("uri", []), sid, fill="a", strip_crlf=True)
             path = _normalize_uri_fragment(uri_text or "/")
+            uri_norm = path
+            uri_raw = path
 
     if not path.startswith("/"):
         path = "/" + path
@@ -492,10 +524,25 @@ def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", defa
         if body_str and not has_header(headers, "Content-Length"):
             set_header_case_insensitive(headers, "Content-Length", str(len(body_str.encode("utf-8", errors="replace"))))
 
+    # URI dual-track: raw/normalized views
+    raw_uri_text = synthesize_bucket_text(buckets.get("uri", []), sid, fill="a", strip_crlf=True)
+    if buckets.get("uri"):
+        # best-effort infer raw source via legacy/sticky mapping in bucket entries
+        has_raw_marker = any(getattr(c, "buffer", None) == "http.uri.raw" for c in buckets.get("uri", []))
+        if has_raw_marker:
+            uri_raw = _normalize_uri_fragment(raw_uri_text or path or "/")
+            if not uri_norm:
+                uri_norm = _normalize_uri_fragment(path or uri_raw)
+        else:
+            if not uri_norm:
+                uri_norm = _normalize_uri_fragment(raw_uri_text or path or "/")
+            if not uri_raw:
+                uri_raw = uri_norm
+
     if method.upper() not in valid_methods:
         method = default_method
 
-    path = (path or "/").replace("\r", "").replace("\n", "")
+    path = (uri_raw or path or uri_norm or "/").replace("\r", "").replace("\n", "")
     path = re.sub(r"\s+", "", path)
     if not path.startswith("/"):
         path = "/" + path
@@ -505,7 +552,7 @@ def build_http_request_from_buckets(buckets: Dict[str, Any], sid: str = "", defa
     if sid:
         headers["Rulesid"] = str(sid).strip()
 
-    return HttpRequestSpec(method=method, path=path, headers=headers, body=body_str)
+    return HttpRequestSpec(method=method, path=path, uri_raw=(uri_raw or path), uri_norm=(uri_norm or path), headers=headers, body=body_str)
 
 
 def build_http_response_from_buckets(buckets: Dict[str, Any], sid: str = "") -> bytes:
@@ -662,6 +709,19 @@ def build_request_for_rule(rule, server: str) -> Tuple[str, Optional[HttpRequest
 
     strategy = classify_http_rule_strategy(rule.body.clauses)
 
+    if strategy == "recoverable_raw":
+        req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
+        ensure_common_headers(server, req)
+        return strategy, req, None
+
+    if strategy == "raw_text":
+        raw_bytes = build_raw_http_text_request_from_clauses(
+            rule.body.clauses,
+            sid=rule.body.sid,
+            server=server,
+        )
+        return strategy, None, raw_bytes
+
     buckets = split_clauses_for_http_generation(rule.body.clauses)
     if buckets.get("_mapping_suspect"):
         return "BUFFER_MAPPING_SUSPECT", None, None
@@ -680,3 +740,52 @@ def build_transaction_artifacts_for_rule(
 ) -> Tuple[str, Optional[HttpRequestSpec], Optional[bytes]]:
     strategy, req, raw_bytes = build_request_for_rule(rule, server)
     return strategy, req, raw_bytes
+
+
+def build_request(plan: TransactionPlan, default_host: str = "example.com") -> bytes:
+    """Build raw HTTP request bytes from TransactionPlan (request-side only)."""
+    bucket_map = {
+        "method": [], "uri": [], "request_line": [], "header": [], "header_names": [],
+        "host": [], "user_agent": [], "cookie": [], "body": [], "other": [],
+        "_buffer_transforms": {},
+    }
+
+    seg_to_bucket = {
+        "http.method": "method",
+        "http.uri": "uri",
+        "http.uri.raw": "uri",
+        "http.request_line": "request_line",
+        "http.header": "header",
+        "http.header_names": "header_names",
+        "http.host": "host",
+        "http.user_agent": "user_agent",
+        "http.cookie": "cookie",
+        "http.request_body": "body",
+        "pkt_data": "other",
+    }
+
+    has_uri_raw = any(seg.buffer == "http.uri.raw" and seg.matches for seg in plan.request_segments)
+
+    for seg in plan.request_segments:
+        if has_uri_raw and seg.buffer == "http.uri":
+            # uri.raw 优先；存在 raw 约束时，规范化视图不再追加到发送路径
+            continue
+        b = seg_to_bucket.get(seg.buffer, "other")
+        for m in seg.matches:
+            if m.kind == "content":
+                cm = ContentMatch(raw=m.raw, decoded=m.raw, nocase=m.modifiers.nocase, negated=m.modifiers.negated, offset=m.modifiers.offset, depth=m.modifiers.depth, distance=m.modifiers.distance, within=m.modifiers.within)
+                if seg.buffer in {"http.uri.raw", "http.uri"}:
+                    cm.buffer = seg.buffer
+                bucket_map[b].append(cm)
+            else:
+                pm = PcreMatch(raw=m.raw, nocase=m.modifiers.nocase, negated=m.modifiers.negated)
+                if seg.buffer in {"http.uri.raw", "http.uri"}:
+                    pm.buffer = seg.buffer
+                bucket_map[b].append(pm)
+
+    req = build_http_request_from_buckets(bucket_map)
+    if not has_header(req.headers, "Host"):
+        set_header_case_insensitive(req.headers, "Host", default_host)
+    if not has_header(req.headers, "Connection"):
+        set_header_case_insensitive(req.headers, "Connection", "close")
+    return render_http_request(req).encode("latin-1", errors="replace")
