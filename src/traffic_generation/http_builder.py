@@ -78,7 +78,10 @@ class HttpRequestSpec(BaseModel):
 
 
 def validate_http_request(req: HttpRequestSpec) -> None:
-    valid_methods = {"GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH"}
+    valid_methods = {
+        "GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH",
+        "PROPFIND", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "TRACE", "CONNECT", "SEARCH",
+    }
 
     if req.method.upper() not in valid_methods:
         raise ValueError(f"invalid HTTP method: {req.method!r}")
@@ -422,7 +425,10 @@ def build_http_request_from_raw_clauses(
             else:
                 body = fallback
 
-    valid_methods = {"GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH"}
+    valid_methods = {
+        "GET", "POST", "PUT", "HEAD", "DELETE", "OPTIONS", "PATCH",
+        "PROPFIND", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "TRACE", "CONNECT", "SEARCH",
+    }
     if method.upper() not in valid_methods:
         method = default_method
 
@@ -692,7 +698,7 @@ def ensure_common_headers(
     req: HttpRequestSpec,
     *,
     add_user_agent: bool = True,
-    add_accept: bool = True,
+    add_accept: bool = False,
     add_connection: bool = True,
     add_accept_language: bool = False,
 ) -> None:
