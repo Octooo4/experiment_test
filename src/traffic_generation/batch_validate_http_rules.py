@@ -294,6 +294,12 @@ def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     return sid_dir
 
 
+
+
+def should_try_legacy_fallback(strategy: str) -> bool:
+    # Keep plan path primary, but allow one legacy retry for all known HTTP build strategies.
+    return strategy in {"sticky", "recoverable_raw", "raw_text"}
+
 def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: int) -> ValidationResult:
     sid = safe_sid(rule_ast.sid)
     msg = rule_ast.msg or ""
@@ -401,7 +407,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         # with legacy builder to recover previous hit-rate while keeping plan as primary path.
         if not hit:
             strategy = classify_http_rule_strategy(rule.body.clauses)
-            if strategy in {"recoverable_raw", "raw_text"}:
+            if should_try_legacy_fallback(strategy):
                 fallback_strategy, req_obj, raw_fallback = build_request_for_rule(rule, cfg.target_server)
                 if req_obj is not None:
                     fb_bytes = render_http_request(req_obj).encode("latin-1", errors="replace")
@@ -410,7 +416,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 else:
                     fb_bytes = b""
 
-                if fb_bytes:
+                if fb_bytes and fb_bytes != request_bytes:
                     req_path.write_bytes(fb_bytes)
                     solver_backend = f"plan_fallback_{fallback_strategy}"
                     # recapture/verify fallback attempt
