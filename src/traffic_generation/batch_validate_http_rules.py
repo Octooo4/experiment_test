@@ -237,6 +237,8 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
                         "raw": m.raw,
                         "modifiers": {
                             "nocase": m.modifiers.nocase,
+                            "startswith": m.modifiers.startswith,
+                            "endswith": m.modifiers.endswith,
                             "offset": m.modifiers.offset,
                             "depth": m.modifiers.depth,
                             "distance": m.modifiers.distance,

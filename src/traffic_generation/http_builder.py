@@ -778,7 +778,18 @@ def build_request(plan: TransactionPlan, default_host: str = "example.com") -> b
         b = seg_to_bucket.get(seg.buffer, "other")
         for m in seg.matches:
             if m.kind == "content":
-                cm = ContentMatch(raw=m.raw, decoded=m.raw, nocase=m.modifiers.nocase, negated=m.modifiers.negated, offset=m.modifiers.offset, depth=m.modifiers.depth, distance=m.modifiers.distance, within=m.modifiers.within)
+                cm = ContentMatch(
+                    raw=m.raw,
+                    decoded=m.raw,
+                    nocase=m.modifiers.nocase,
+                    startswith=m.modifiers.startswith,
+                    endswith=m.modifiers.endswith,
+                    negated=m.modifiers.negated,
+                    offset=m.modifiers.offset,
+                    depth=m.modifiers.depth,
+                    distance=m.modifiers.distance,
+                    within=m.modifiers.within,
+                )
                 if seg.buffer in {"http.uri.raw", "http.uri"}:
                     cm.buffer = seg.buffer
                 bucket_map[b].append(cm)

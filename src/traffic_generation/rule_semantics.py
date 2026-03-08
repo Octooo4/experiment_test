@@ -51,6 +51,8 @@ class FlowConstraint:
 @dataclass
 class MatchModifiers:
     nocase: bool = False
+    startswith: bool = False
+    endswith: bool = False
     offset: Optional[int] = None
     depth: Optional[int] = None
     distance: Optional[int] = None
@@ -113,6 +115,8 @@ def extract_http_plan(rule) -> TransactionPlan:
                     raw=(getattr(clause, "decoded", None) or getattr(clause, "raw", "") or ""),
                     modifiers=MatchModifiers(
                         nocase=bool(getattr(clause, "nocase", False)),
+                        startswith=bool(getattr(clause, "startswith", False)),
+                        endswith=bool(getattr(clause, "endswith", False)),
                         offset=getattr(clause, "offset", None),
                         depth=getattr(clause, "depth", None),
                         distance=getattr(clause, "distance", None),
