@@ -114,9 +114,24 @@ SUPPORTED_KEYWORDS = {
     "msg", "sid", "rev", "flow", "content", "pcre", "isdataat", "dsize", "bsize",
     "nocase", "fast_pattern", "startswith", "endswith", "offset", "depth", "distance", "within",
     "header_lowercase", "to_lowercase",
+    "urilen", "url_decode",
     *STICKY_BUFFER_KEYWORDS.keys(),
     *LEGACY_BUFFER_MODIFIERS.keys(),
 }
+
+# 这些关键字通常只承载分类/注释/告警展示信息，不改变内容匹配语义。
+# 在 to_server 请求生成阶段将其视为“已知但忽略”，避免误报 UNSUPPORTED_KEYWORD。
+NON_BLOCKING_METADATA_KEYWORDS = {
+    "reference",
+    "metadata",
+    "classtype",
+    "priority",
+    "target",
+    "tag",
+    "threshold",
+}
+
+SUPPORTED_KEYWORDS = SUPPORTED_KEYWORDS | NON_BLOCKING_METADATA_KEYWORDS
 
 
 @dataclass
@@ -315,6 +330,19 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             if k == "rev" and v is not None:
                 body.rev = v
             continue
+        if k in LEGACY_BUFFER_MODIFIERS:
+            mapped = LEGACY_BUFFER_MODIFIERS[k]
+            if last_mod_target == "content" and last_content is not None:
+                last_content.buffer = mapped
+            elif last_mod_target == "pcre" and last_pcre is not None:
+                last_pcre.buffer = mapped
+            else:
+                # 兜底：若 modifier 前没有可绑定的匹配项，退化为 sticky 切换
+                bs = BufferSwitch(buffer=mapped)
+                body.clauses.append(bs)
+                last_buffer_switch = bs
+            continue
+
         if k in STICKY_BUFFER_KEYWORDS and v is None:
             bs = BufferSwitch(buffer=STICKY_BUFFER_KEYWORDS[k])
             body.clauses.append(bs)
@@ -365,12 +393,6 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             continue
         if k == "endswith" and last_content is not None:
             last_content.endswith = True
-            continue
-        if k in LEGACY_BUFFER_MODIFIERS:
-            mapped = LEGACY_BUFFER_MODIFIERS[k]
-            bs = BufferSwitch(buffer=mapped)
-            body.clauses.append(bs)
-            last_buffer_switch = bs
             continue
         if k in {"offset", "depth", "distance", "within"} and v is not None and last_content is not None:
             try:
@@ -559,15 +581,45 @@ def generate_string_from_pcre(pcre_string: str) -> str:
     return fallback_string_from_regex(pcre_string)
 
 
+def _split_pcre_literal(s: str) -> Tuple[str, str]:
+    """
+    线性扫描 `/pattern/flags`，避免正则匹配在超长/异常 PCRE 字符串上卡死。
+    """
+    if not s.startswith("/"):
+        return s, ""
+
+    escaped = False
+    for i in range(1, len(s)):
+        ch = s[i]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "/":
+            return s[1:i], s[i + 1 :]
+    return s, ""
+
+
 def parse_pcre_raw(pcre_raw: str) -> Tuple[str, str]:
     s = (pcre_raw or "").strip()
-    m = _PC_RE.match(s)
-    if m:
-        return m.group("body"), (m.group("flags") or "")
-    s2 = s.strip('"').strip()
-    if s2.startswith("/") and s2.count("/") >= 2:
-        last = s2.rfind("/")
-        return s2[1:last], s2[last + 1 :]
+
+    # 常见输入是双引号包裹："/foo/i"
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].strip()
+
+    body, flags = _split_pcre_literal(s)
+    if body != s or flags:
+        return body, flags
+
+    # 兜底：如果是 /.../ 但未被前面识别（例如存在尾部空白），再做一次安全裁剪
+    s2 = s.strip()
+    if s2.startswith("/"):
+        body2, flags2 = _split_pcre_literal(s2)
+        if body2 != s2 or flags2:
+            return body2, flags2
+
     return s2, ""
 
 
