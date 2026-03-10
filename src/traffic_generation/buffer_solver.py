@@ -38,6 +38,14 @@ class SolveResult:
     negated_content_postfix_sanitized: bool = False
 
 
+@dataclass
+class BucketSynthesisResult:
+    bytes: bytes
+    solved_by: str
+    unsat_reason: Optional[str] = None
+    negated_content_postfix_sanitized: bool = False
+
+
 def parse_content_string(s: str) -> bytes:
     """Parse Suricata content string to bytes.
 
@@ -123,9 +131,12 @@ def _concrete_from_clause(c: object, sid: str) -> Optional[ConcreteMatch]:
         def _gen() -> bytes:
             return generate_string_from_pcre(sanitized).encode("latin-1", errors="replace")
 
+        sample = _gen()
+
         return ConcreteMatch(
             kind="pcre",
             pattern=getattr(c, "raw", ""),
+            value=sample,
             generator=_gen,
             negated=bool(getattr(c, "negated", False)),
             nocase=bool(getattr(c, "nocase", False)),
@@ -234,8 +245,19 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
 
     Falls back to greedy placement if z3 is unavailable or solver fails/unsat.
     """
-    positive_contents = [m for m in matches if m.kind == "content" and not m.negated and m.value]
-    if not positive_contents:
+    positive_terms: List[ConcreteMatch] = []
+    for m in matches:
+        if m.negated:
+            continue
+        if m.kind == "content" and m.value:
+            positive_terms.append(m)
+        elif m.kind == "pcre":
+            if not m.value and m.generator is not None:
+                m.value = m.generator()
+            if m.value:
+                positive_terms.append(m)
+
+    if not positive_terms:
         sanitized, changed = _sanitize_negated_content_postfix(b"", matches)
         return SolveResult(bytes=sanitized, solved_by="greedy", negated_content_postfix_sanitized=changed)
 
@@ -243,12 +265,12 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
         from z3 import Int, Optimize, sat  # type: ignore
 
         opt = Optimize()
-        starts = [Int(f"start_{i}") for i in range(len(positive_contents))]
+        starts = [Int(f"start_{i}") for i in range(len(positive_terms))]
         total_len = Int("total_len")
         opt.add(total_len >= 0)
 
         prev_end = None
-        for i, c in enumerate(positive_contents):
+        for i, c in enumerate(positive_terms):
             token_len = len(c.value)
             s_i = starts[i]
             opt.add(s_i >= 0)
@@ -276,10 +298,10 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
             opt.add(total_len >= s_i + token_len)
             prev_end = s_i + token_len
 
-        if any(c.endswith for c in positive_contents):
-            tail = next((c for c in reversed(positive_contents) if c.endswith), None)
+        if any(c.endswith for c in positive_terms):
+            tail = next((c for c in reversed(positive_terms) if c.endswith), None)
             if tail is not None:
-                tail_idx = positive_contents.index(tail)
+                tail_idx = positive_terms.index(tail)
                 opt.add(starts[tail_idx] + len(tail.value) == total_len)
 
         opt.minimize(total_len)
@@ -288,7 +310,7 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
 
         model = opt.model()
         solved_positions = [model.eval(s).as_long() for s in starts]
-        solved = _build_with_positions(positive_contents, solved_positions, fill=fill)
+        solved = _build_with_positions(positive_terms, solved_positions, fill=fill)
         solved, changed = _sanitize_negated_content_postfix(solved, matches)
         return SolveResult(
             bytes=solved,
@@ -306,21 +328,15 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
         )
 
 
-def synthesize_bucket_bytes(
+def synthesize_bucket(
     clauses: List[object], sid: str, *, fill: bytes = b"A", strip_crlf: bool = False
-) -> bytes:
+) -> BucketSynthesisResult:
     concrete = [_concrete_from_clause(c, sid) for c in clauses]
     terms = [c for c in concrete if c is not None]
 
     solved = solve_segment(terms, fill=fill) if terms else SolveResult(bytes=b"", solved_by="greedy")
     s = solved.bytes
     prev_end = len(s)
-
-    for c in terms:
-        if c.kind == "pcre" and not c.negated and c.generator is not None:
-            sample = c.generator()
-            s += sample or b""
-            prev_end = len(s)
 
     for c in clauses:
         if isinstance(c, IsDataAtMatch):
@@ -352,7 +368,18 @@ def synthesize_bucket_bytes(
 
     if strip_crlf:
         s = s.replace(b"\r", b"").replace(b"\n", b"")
-    return s
+    return BucketSynthesisResult(
+        bytes=s,
+        solved_by=solved.solved_by,
+        unsat_reason=solved.unsat_reason,
+        negated_content_postfix_sanitized=solved.negated_content_postfix_sanitized,
+    )
+
+
+def synthesize_bucket_bytes(
+    clauses: List[object], sid: str, *, fill: bytes = b"A", strip_crlf: bool = False
+) -> bytes:
+    return synthesize_bucket(clauses, sid, fill=fill, strip_crlf=strip_crlf).bytes
 
 
 def synthesize_bucket_text(
