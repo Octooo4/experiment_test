@@ -228,7 +228,7 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
                 unsat_reasons[bucket_name] = msg
         else:
             solver_backends[bucket_name] = synth.solved_by
-            if synth.unsat_reason:
+            if synth.solved_by == "greedy" and synth.unsat_reason:
                 unsat_reasons[bucket_name] = synth.unsat_reason
 
     tx_plan = extract_http_plan(rule)

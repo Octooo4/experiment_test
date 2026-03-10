@@ -320,10 +320,12 @@ def solve_segment(matches: List[ConcreteMatch], fill: bytes = b"A") -> SolveResu
     except Exception as e:
         greedy, _ = build_stream_from_contents(matches, fill=fill)
         greedy, changed = _sanitize_negated_content_postfix(greedy, matches)
+        reason = str(e)
+        unsat_reason = reason if "unsat" in reason.lower() else None
         return SolveResult(
             bytes=greedy,
             solved_by="greedy",
-            unsat_reason=str(e),
+            unsat_reason=unsat_reason,
             negated_content_postfix_sanitized=changed,
         )
 
