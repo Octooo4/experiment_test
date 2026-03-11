@@ -19,9 +19,9 @@ def build_payload_for_rule(rule: object) -> AdapterBuildResult:
     clauses = getattr(getattr(rule, "body", None), "clauses", []) or []
     sid = str(getattr(getattr(rule, "body", None), "sid", "") or "")
 
-    segments: list[SynthesisSegment] = []
-    chunks: list[bytes] = []
     warnings: list[str] = []
+    supported_clauses: list[object] = []
+    supported_indexes: list[int] = []
 
     for idx, clause in enumerate(clauses):
         if _is_http_specific_clause(clause):
@@ -30,23 +30,28 @@ def build_payload_for_rule(rule: object) -> AdapterBuildResult:
         if not isinstance(clause, _SUPPORTED_RAW_TYPES):
             warnings.append(f"unsupported raw clause ignored at index={idx}: {type(clause).__name__}")
             continue
+        supported_clauses.append(clause)
+        supported_indexes.append(idx)
 
-        synth = synthesize_bucket([clause], sid=sid, fill=b"A", strip_crlf=False)
-        if synth.bytes:
-            chunks.append(synth.bytes)
+    segments: list[SynthesisSegment] = []
+    payload = b""
+    if supported_clauses:
+        synth = synthesize_bucket(supported_clauses, sid=sid, fill=b"A", strip_crlf=False)
+        payload = synth.bytes or b""
         segments.append(
             SynthesisSegment(
-                segment_name=f"raw_clause_{idx}_{type(clause).__name__}",
-                segment_bytes=synth.bytes,
+                segment_name=(
+                    f"raw_rule_joint_solve_{supported_indexes[0]}_{supported_indexes[-1]}"
+                    if supported_indexes
+                    else "raw_rule_joint_solve"
+                ),
+                segment_bytes=payload,
                 solver_backend=synth.solved_by,
                 unsat_reason=synth.unsat_reason,
             )
         )
-
-    payload = b"".join(chunks)
-    if not payload:
-        payload = b"A"
-        warnings.append("payload fallback byte used: no positive raw content synthesized")
+    else:
+        warnings.append("no supported tcp_raw clause remained after filtering")
 
     transport_warnings, unsupported = extract_transport_keyword_warnings(rule, protocol="tcp")
     warnings.extend(transport_warnings)

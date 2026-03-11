@@ -73,9 +73,6 @@ def collect_unsupported_transport_features(rule: object) -> list[str]:
 
     flow = getattr(getattr(rule, "body", None), "flow", None)
     if flow is not None:
-        if bool(getattr(flow, "established", False)) and "flow.established" not in seen:
-            features.append("flow.established")
-            seen.add("flow.established")
         if bool(getattr(flow, "to_client", False)) and "flow.to_client" not in seen:
             features.append("flow.to_client")
             seen.add("flow.to_client")
