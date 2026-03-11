@@ -26,6 +26,17 @@ def choose_rule_adapter(rule: object) -> AdapterKind:
     return "tcp_raw"
 
 
+def _selected_protocol(rule: object) -> str:
+    return str(getattr(getattr(rule, "header", None), "protocol", "") or "").lower()
+
+
+def _should_skip_non_tcp_application_protocol(rule: object) -> bool:
+    protocol = _selected_protocol(rule)
+    if protocol in {"", "http", "udp", "tcp"}:
+        return False
+    return True
+
+
 def _target_host_port(target_server: str, fallback_port: int) -> tuple[str, int]:
     if "://" in target_server:
         u = urlparse(target_server)
@@ -93,15 +104,29 @@ def _resolve_rule_port(rule: object, fallback_port: int) -> dict[str, object]:
 
 
 def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
+    selected_protocol = _selected_protocol(rule)
+    if _should_skip_non_tcp_application_protocol(rule):
+        return {
+            "adapter": "tcp_raw",
+            "selected_protocol": selected_protocol,
+            "payload": b"",
+            "segments": [],
+            "warnings": [f"protocol {selected_protocol} is not supported by tcp_raw generator"],
+            "unsupported_transport_features": [],
+            "status": "SKIPPED",
+            "skip_reason": "SKIP_UNSUPPORTED_APPLICATION_PROTOCOL_OVER_TCP",
+        }
+
     adapter = choose_rule_adapter(rule)
     if adapter == "http":
         out = build_http_for_rule(rule, target_server)
         payload = out.raw_bytes or b""
-        return {"adapter": adapter, "payload": payload, "strategy": out.strategy}
+        return {"adapter": adapter, "selected_protocol": selected_protocol, "payload": payload, "strategy": out.strategy}
     if adapter == "udp_raw":
         out = build_udp_payload_for_rule(rule)
         return {
             "adapter": adapter,
+            "selected_protocol": selected_protocol,
             "payload": out.payload,
             "segments": out.segments,
             "warnings": out.transport_warnings,
@@ -111,6 +136,7 @@ def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
     out = build_tcp_payload_for_rule(rule)
     return {
         "adapter": adapter,
+        "selected_protocol": selected_protocol,
         "payload": out.payload,
         "segments": out.segments,
         "warnings": out.transport_warnings,
@@ -154,6 +180,14 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
     adapter = built["adapter"]
     payload = built.get("payload", b"") or b""
 
+    if built.get("status") == "SKIPPED":
+        return {
+            **built,
+            "bytes_sent": 0,
+            "target_port": None,
+            "emit_error": None,
+        }
+
     if adapter == "http":
         status, _ = send_raw_http_bytes(target_server, payload, timeout=timeout)
         return {**built, "status": status}
@@ -168,6 +202,16 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
             "target_port": None,
             "emit_error": None,
             "unsupported_transport_features": unsupported,
+        }
+
+    if not payload:
+        return {
+            **built,
+            "status": "SKIPPED",
+            "skip_reason": "SKIP_NO_SUPPORTED_TCP_RAW_CLAUSE",
+            "bytes_sent": 0,
+            "target_port": None,
+            "emit_error": None,
         }
 
     if adapter == "udp_raw":
