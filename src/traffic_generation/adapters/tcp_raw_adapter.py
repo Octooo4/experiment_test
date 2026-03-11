@@ -1,40 +1,42 @@
 from __future__ import annotations
 
-from parse.buckets_sorting import split_clauses_for_http_generation
-from traffic_generation.buffer_solver import synthesize_bucket
+from core.models import BSizeMatch, BufferSwitch, ContentMatch, DSizeMatch, IsDataAtMatch, PcreMatch
 from traffic_generation.adapters.common import AdapterBuildResult, SynthesisSegment, extract_transport_keyword_warnings
+from traffic_generation.buffer_solver import synthesize_bucket
 
-_BUCKET_ORDER = [
-    "protocol",
-    "pkt_data",
-    "other",
-    "request_line",
-    "uri",
-    "header",
-    "host",
-    "cookie",
-    "body",
-]
+_SUPPORTED_RAW_TYPES = (ContentMatch, PcreMatch, IsDataAtMatch, DSizeMatch, BSizeMatch)
+
+
+def _is_http_specific_clause(clause: object) -> bool:
+    if isinstance(clause, BufferSwitch):
+        buf = getattr(clause, "buffer", None)
+        return isinstance(buf, str) and buf.startswith("http.")
+    buf = getattr(clause, "buffer", None)
+    return isinstance(buf, str) and buf.startswith("http.")
 
 
 def build_payload_for_rule(rule: object) -> AdapterBuildResult:
     clauses = getattr(getattr(rule, "body", None), "clauses", []) or []
     sid = str(getattr(getattr(rule, "body", None), "sid", "") or "")
-    buckets = split_clauses_for_http_generation(clauses)
 
     segments: list[SynthesisSegment] = []
     chunks: list[bytes] = []
+    warnings: list[str] = []
 
-    for bucket in _BUCKET_ORDER:
-        bucket_clauses = buckets.get(bucket)
-        if not isinstance(bucket_clauses, list) or not bucket_clauses:
+    for idx, clause in enumerate(clauses):
+        if _is_http_specific_clause(clause):
+            warnings.append(f"http-only clause ignored at index={idx}: {type(clause).__name__}")
             continue
-        synth = synthesize_bucket(bucket_clauses, sid=sid, fill=b"A", strip_crlf=False)
+        if not isinstance(clause, _SUPPORTED_RAW_TYPES):
+            warnings.append(f"unsupported raw clause ignored at index={idx}: {type(clause).__name__}")
+            continue
+
+        synth = synthesize_bucket([clause], sid=sid, fill=b"A", strip_crlf=False)
         if synth.bytes:
             chunks.append(synth.bytes)
         segments.append(
             SynthesisSegment(
-                segment_name=bucket,
+                segment_name=f"raw_clause_{idx}_{type(clause).__name__}",
                 segment_bytes=synth.bytes,
                 solver_backend=synth.solved_by,
                 unsat_reason=synth.unsat_reason,
@@ -44,6 +46,14 @@ def build_payload_for_rule(rule: object) -> AdapterBuildResult:
     payload = b"".join(chunks)
     if not payload:
         payload = b"A"
+        warnings.append("payload fallback byte used: no positive raw content synthesized")
 
-    warnings = extract_transport_keyword_warnings(rule, protocol="tcp")
-    return AdapterBuildResult(adapter="tcp_raw", payload=payload, segments=segments, transport_warnings=warnings)
+    transport_warnings, unsupported = extract_transport_keyword_warnings(rule, protocol="tcp")
+    warnings.extend(transport_warnings)
+    return AdapterBuildResult(
+        adapter="tcp_raw",
+        payload=payload,
+        segments=segments,
+        transport_warnings=warnings,
+        unsupported_transport_features=unsupported,
+    )

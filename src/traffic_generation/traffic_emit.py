@@ -5,6 +5,7 @@ import re
 import socket
 import sys
 import urllib.parse
+import time
 from typing import Tuple
 
 from traffic_generation.http_builder import HttpRequestSpec, validate_http_request
@@ -90,8 +91,27 @@ def send_raw_http_bytes(server: str, raw_bytes: bytes, timeout: int = 3) -> Tupl
     return status, data
 
 
-def send_raw_tcp_bytes(host: str, port: int, payload: bytes, timeout: int = 3) -> int:
+def send_raw_tcp_bytes(
+    host: str,
+    port: int,
+    payload: bytes,
+    timeout: int = 3,
+    *,
+    segments: list[bytes] | None = None,
+    segment_delay_s: float = 0.0,
+) -> int:
     with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+        if segments:
+            total_sent = 0
+            for seg in segments:
+                if not seg:
+                    continue
+                sock.sendall(seg)
+                total_sent += len(seg)
+                if segment_delay_s > 0:
+                    time.sleep(segment_delay_s)
+            return total_sent
+
         sock.sendall(payload)
     return len(payload)
 
