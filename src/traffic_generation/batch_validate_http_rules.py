@@ -598,11 +598,12 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             if produced_eve_path.exists():
                 shutil.copy2(produced_eve_path, eve_path)
 
+            emit_error = emit_info.get("emit_error")
             result = ValidationResult(
                 sid=sid,
                 msg=msg,
                 status="PASS" if hit else "MISS",
-                miss_reason=None if hit else NO_ALERT_FOR_SID,
+                miss_reason=None if hit else (EMIT_FAILED if emit_error else NO_ALERT_FOR_SID),
                 request_path=str(req_path),
                 pcap_path=str(pcap_path),
                 eve_path=str(eve_path),
