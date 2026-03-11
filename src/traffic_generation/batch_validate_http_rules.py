@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from parse.buckets_sorting import clauses_to_terms, split_clauses_for_http_generation
-from traffic_generation.buffer_solver import synthesize_bucket_bytes
+from traffic_generation.buffer_solver import synthesize_bucket
 from traffic_generation.http_builder import (
     build_http_request_from_raw_clauses,
     build_http_request_from_buckets,
@@ -219,7 +219,7 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
         if not isinstance(clauses, list) or not clauses:
             continue
         try:
-            synthesize_bucket_bytes(clauses, sid=rule.body.sid)
+            synth = synthesize_bucket(clauses, sid=rule.body.sid)
         except Exception as e:
             msg = str(e)
             if "pcre" in msg.lower() or "regex" in msg.lower() or "exrex" in msg.lower():
@@ -227,7 +227,9 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
             else:
                 unsat_reasons[bucket_name] = msg
         else:
-            solver_backends[bucket_name] = "z3_or_greedy"
+            solver_backends[bucket_name] = synth.solved_by
+            if synth.solved_by == "greedy" and synth.unsat_reason:
+                unsat_reasons[bucket_name] = synth.unsat_reason
 
     tx_plan = extract_http_plan(rule)
     tx_plan_dict = {
