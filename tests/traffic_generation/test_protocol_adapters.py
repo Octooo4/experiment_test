@@ -4,6 +4,7 @@ from core.models import ContentMatch, RuleBody, RuleHeader, SuricataRule
 from traffic_generation.adapters.tcp_raw_adapter import build_payload_for_rule as build_tcp_payload_for_rule
 from traffic_generation.adapters.udp_raw_adapter import build_payload_for_rule as build_udp_payload_for_rule
 from traffic_generation.validate.batch_validate_rules import choose_rule_adapter
+from traffic_generation.validate import batch_validate_rules as validate_rules
 
 
 def _rule(protocol: str, clauses: list[object]) -> SuricataRule:
@@ -50,3 +51,21 @@ def test_udp_raw_adapter_builds_payload_and_transport_warnings():
     assert out.payload
     assert out.adapter == "udp_raw"
     assert any("dsize" in w for w in out.transport_warnings)
+
+
+def test_emit_rule_payload_prefers_rule_dst_port_for_tcp(monkeypatch):
+    calls = {}
+
+    def fake_send(host, port, payload, timeout=3):
+        calls["host"] = host
+        calls["port"] = port
+        calls["payload"] = payload
+        return len(payload)
+
+    monkeypatch.setattr(validate_rules, "send_raw_tcp_bytes", fake_send)
+    r = _rule("tcp", [ContentMatch(raw="abc", decoded="abc")])
+    r.header.dst_port = "4444"
+
+    out = validate_rules.emit_rule_payload(r, "127.0.0.1:80")
+    assert out["adapter"] == "tcp_raw"
+    assert calls["port"] == 4444

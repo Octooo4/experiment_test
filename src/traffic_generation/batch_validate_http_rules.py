@@ -22,6 +22,7 @@ from traffic_generation.http_builder import (
     render_http_request,
 )
 from traffic_generation.traffic_emit import send_raw_http_bytes
+from traffic_generation.validate.batch_validate_rules import choose_rule_adapter, emit_rule_payload
 from traffic_generation.rule_parse import Rule, ast_to_suricata_rule, parse_rules
 from traffic_generation.rule_semantics import classify_http_rule_strategy, extract_http_plan, get_rule_admission_skip_reason
 
@@ -53,6 +54,8 @@ class ValidationResult:
     eve_path: Optional[str] = None
     unsupported_features: list[str] = field(default_factory=list)
     solver_backend: Optional[str] = None
+    traffic_type: Optional[str] = None
+    generation_success: bool = False
 
 
 @dataclass
@@ -419,13 +422,15 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
 
     plan = build_rule_plan(rule, rule_ast)
     tx_plan_obj = extract_http_plan(rule)
+    adapter = choose_rule_adapter(rule)
+    traffic_type = "http" if adapter == "http" else ("udp" if adapter == "udp_raw" else "tcp")
     write_json(plan_path, plan)
 
     unsupported_features: list[str] = []
     if plan["unsupported_keywords"]:
         unsupported_features.extend([f"keyword:{x}" for x in plan["unsupported_keywords"]])
 
-    skip_reason = get_rule_admission_skip_reason(rule)
+    skip_reason = get_rule_admission_skip_reason(rule) if adapter == "http" else None
     if skip_reason:
         result = ValidationResult(
             sid=sid,
@@ -436,6 +441,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
+            traffic_type=traffic_type,
         )
         write_json(diagnose_path, {"stage": "filter", "reason": skip_reason, "result": asdict(result)})
         return result
@@ -504,6 +510,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     eve_path=str(eve_path),
                     unsupported_features=unsupported_features,
                     solver_backend=solver_backend,
+                    traffic_type=traffic_type,
+                    generation_success=True,
                 )
             else:
                 result = ValidationResult(
@@ -516,6 +524,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     eve_path=str(eve_path),
                     unsupported_features=unsupported_features,
                     solver_backend=solver_backend,
+                    traffic_type=traffic_type,
+                    generation_success=False,
                 )
             write_json(
                 diagnose_path,
@@ -555,6 +565,45 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
 
     capture_proc: Optional[subprocess.Popen] = None
     try:
+        if adapter != "http":
+            capture_proc = start_capture(cfg, pcap_path)
+            try:
+                emit_info = emit_rule_payload(rule, cfg.target_server, timeout=int(cfg.request_timeout))
+                req_path.write_bytes((emit_info.get("payload") or b""))
+                time.sleep(cfg.post_request_sleep_seconds)
+            finally:
+                stop_capture(capture_proc)
+                capture_proc = None
+
+            hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+            if produced_eve_path.exists():
+                shutil.copy2(produced_eve_path, eve_path)
+
+            result = ValidationResult(
+                sid=sid,
+                msg=msg,
+                status="PASS" if hit else "MISS",
+                miss_reason=None if hit else NO_ALERT_FOR_SID,
+                request_path=str(req_path),
+                pcap_path=str(pcap_path),
+                eve_path=str(eve_path),
+                unsupported_features=unsupported_features,
+                solver_backend=adapter,
+                traffic_type=traffic_type,
+                generation_success=bool(emit_info.get("payload")),
+            )
+            write_json(
+                diagnose_path,
+                {
+                    "stage": "complete",
+                    "adapter": adapter,
+                    "hit": hit,
+                    "emit_info": emit_info,
+                    "result": asdict(result),
+                },
+            )
+            return result
+
         default_host = cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"
         request_bytes = build_request(tx_plan_obj, default_host=default_host)
         solver_backend = "plan"
@@ -593,6 +642,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
             solver_backend=solver_backend,
+            traffic_type=traffic_type,
+            generation_success=True,
         )
         write_json(
             diagnose_path,

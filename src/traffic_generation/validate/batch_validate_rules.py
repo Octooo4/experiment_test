@@ -30,6 +30,15 @@ def _target_host_port(target_server: str, fallback_port: int) -> tuple[str, int]
     return target_server, fallback_port
 
 
+def _rule_dst_port(rule: object) -> int | None:
+    dst_port = str(getattr(getattr(rule, "header", None), "dst_port", "") or "").strip()
+    if dst_port.isdigit():
+        p = int(dst_port)
+        if 0 < p <= 65535:
+            return p
+    return None
+
+
 def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
     adapter = choose_rule_adapter(rule)
     if adapter == "http":
@@ -55,9 +64,11 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
 
     if adapter == "udp_raw":
         host, port = _target_host_port(target_server, fallback_port=53)
+        port = _rule_dst_port(rule) or port
         sent = send_raw_udp_bytes(host, port, payload, timeout=timeout)
         return {**built, "bytes_sent": sent}
 
     host, port = _target_host_port(target_server, fallback_port=80)
+    port = _rule_dst_port(rule) or port
     sent = send_raw_tcp_bytes(host, port, payload, timeout=timeout)
     return {**built, "bytes_sent": sent}
