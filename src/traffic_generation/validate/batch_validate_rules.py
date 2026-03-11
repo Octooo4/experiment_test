@@ -53,6 +53,28 @@ def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
     return {"adapter": adapter, "payload": out.payload, "segments": out.segments, "warnings": out.transport_warnings}
 
 
+def _emit_tcp_with_retry(host: str, preferred_port: int | None, fallback_port: int, payload: bytes, timeout: int) -> dict[str, object]:
+    tried_ports: list[int] = []
+    if preferred_port:
+        tried_ports.append(int(preferred_port))
+    if fallback_port not in tried_ports:
+        tried_ports.append(int(fallback_port))
+
+    last_error: Exception | None = None
+    for port in tried_ports:
+        try:
+            sent = send_raw_tcp_bytes(host, port, payload, timeout=timeout)
+            return {"bytes_sent": sent, "target_port": port, "emit_error": None}
+        except OSError as exc:
+            last_error = exc
+
+    return {
+        "bytes_sent": 0,
+        "target_port": tried_ports[0] if tried_ports else fallback_port,
+        "emit_error": str(last_error) if last_error is not None else "tcp emit failed",
+    }
+
+
 def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dict[str, object]:
     built = build_rule_payload(rule, target_server)
     adapter = built["adapter"]
@@ -64,11 +86,14 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
 
     if adapter == "udp_raw":
         host, port = _target_host_port(target_server, fallback_port=53)
-        port = _rule_dst_port(rule) or port
-        sent = send_raw_udp_bytes(host, port, payload, timeout=timeout)
-        return {**built, "bytes_sent": sent}
+        dst_port = _rule_dst_port(rule) or port
+        try:
+            sent = send_raw_udp_bytes(host, dst_port, payload, timeout=timeout)
+            return {**built, "bytes_sent": sent, "target_port": dst_port, "emit_error": None}
+        except OSError as exc:
+            return {**built, "bytes_sent": 0, "target_port": dst_port, "emit_error": str(exc)}
 
-    host, port = _target_host_port(target_server, fallback_port=80)
-    port = _rule_dst_port(rule) or port
-    sent = send_raw_tcp_bytes(host, port, payload, timeout=timeout)
-    return {**built, "bytes_sent": sent}
+    host, fallback_port = _target_host_port(target_server, fallback_port=80)
+    dst_port = _rule_dst_port(rule)
+    emitted = _emit_tcp_with_retry(host, dst_port, fallback_port, payload, timeout)
+    return {**built, **emitted}
