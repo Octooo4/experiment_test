@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from traffic_generation.adapters.common import AdapterKind, has_http_sticky_buffers
+from traffic_generation.adapters.common import AdapterKind, has_dns_sticky_buffers, has_http_sticky_buffers
+from traffic_generation.adapters.dns_adapter import build_dns_for_rule
 from traffic_generation.adapters.http_adapter import build_http_for_rule
 from traffic_generation.adapters.tcp_raw_adapter import build_payload_for_rule as build_tcp_payload_for_rule
 from traffic_generation.adapters.udp_raw_adapter import build_payload_for_rule as build_udp_payload_for_rule
@@ -21,20 +22,17 @@ def choose_rule_adapter(rule: object) -> AdapterKind:
     protocol = str(getattr(getattr(rule, "header", None), "protocol", "") or "").lower()
     if protocol == "http" or has_http_sticky_buffers(rule):
         return "http"
+    if protocol == "dns" or has_dns_sticky_buffers(rule):
+        return "dns"
     if protocol == "udp":
         return "udp_raw"
-    return "tcp_raw"
+    if protocol == "tcp":
+        return "tcp_raw"
+    return "unsupported"
 
 
 def _selected_protocol(rule: object) -> str:
     return str(getattr(getattr(rule, "header", None), "protocol", "") or "").lower()
-
-
-def _should_skip_non_tcp_application_protocol(rule: object) -> bool:
-    protocol = _selected_protocol(rule)
-    if protocol in {"", "http", "udp", "tcp"}:
-        return False
-    return True
 
 
 def _target_host_port(target_server: str, fallback_port: int) -> tuple[str, int]:
@@ -59,8 +57,6 @@ def _parse_port_token(token: str) -> int | None:
     up = t.upper()
     if up in _PORT_VAR_MAP:
         return _PORT_VAR_MAP[up]
-
-    # range form like 1000:2000 or :1024 or 1024:
     if ":" in t and t.count(":") == 1:
         left, right = [x.strip() for x in t.split(":", 1)]
         if left:
@@ -72,11 +68,8 @@ def _parse_port_token(token: str) -> int | None:
 
 def _rule_dst_port(rule: object) -> int | None:
     dst_port = str(getattr(getattr(rule, "header", None), "dst_port", "") or "").strip()
-    if not dst_port:
+    if not dst_port or dst_port.lower() == "any":
         return None
-    if dst_port.lower() == "any":
-        return None
-
     cleaned = dst_port.strip("[]")
     for token in cleaned.split(","):
         parsed = _parse_port_token(token)
@@ -89,12 +82,7 @@ def _resolve_rule_port(rule: object, fallback_port: int) -> dict[str, object]:
     raw = str(getattr(getattr(rule, "header", None), "dst_port", "") or "").strip()
     parsed = _rule_dst_port(rule)
     if parsed is not None:
-        return {
-            "rule_dst_port_raw": raw,
-            "rule_dst_port": parsed,
-            "used_fallback": False,
-            "port_resolution_note": None,
-        }
+        return {"rule_dst_port_raw": raw, "rule_dst_port": parsed, "used_fallback": False, "port_resolution_note": None}
     return {
         "rule_dst_port_raw": raw,
         "rule_dst_port": fallback_port,
@@ -105,23 +93,28 @@ def _resolve_rule_port(rule: object, fallback_port: int) -> dict[str, object]:
 
 def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
     selected_protocol = _selected_protocol(rule)
-    if _should_skip_non_tcp_application_protocol(rule):
+    adapter = choose_rule_adapter(rule)
+
+    if adapter == "unsupported":
         return {
-            "adapter": "tcp_raw",
+            "adapter": "unsupported",
             "selected_protocol": selected_protocol,
             "payload": b"",
-            "segments": [],
-            "warnings": [f"protocol {selected_protocol} is not supported by tcp_raw generator"],
-            "unsupported_transport_features": [],
             "status": "SKIPPED",
-            "skip_reason": "SKIP_UNSUPPORTED_APPLICATION_PROTOCOL_OVER_TCP",
+            "skip_reason": "SKIP_UNSUPPORTED_APPLICATION_PROTOCOL",
+            "warnings": [f"protocol {selected_protocol} unsupported"],
         }
 
-    adapter = choose_rule_adapter(rule)
     if adapter == "http":
         out = build_http_for_rule(rule, target_server)
         payload = out.raw_bytes or b""
         return {"adapter": adapter, "selected_protocol": selected_protocol, "payload": payload, "strategy": out.strategy}
+
+    if adapter == "dns":
+        out = build_dns_for_rule(rule)
+        out["selected_protocol"] = selected_protocol
+        return out
+
     if adapter == "udp_raw":
         out = build_udp_payload_for_rule(rule)
         return {
@@ -144,15 +137,7 @@ def build_rule_payload(rule: object, target_server: str) -> dict[str, object]:
     }
 
 
-def _emit_tcp_with_retry(
-    host: str,
-    preferred_port: int | None,
-    fallback_port: int,
-    payload: bytes,
-    timeout: int,
-    *,
-    segment_payloads: list[bytes] | None = None,
-) -> dict[str, object]:
+def _emit_tcp_with_retry(host: str, preferred_port: int | None, fallback_port: int, payload: bytes, timeout: int, *, segment_payloads: list[bytes] | None = None) -> dict[str, object]:
     tried_ports: list[int] = []
     if preferred_port:
         tried_ports.append(int(preferred_port))
@@ -175,22 +160,17 @@ def _emit_tcp_with_retry(
     }
 
 
-def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dict[str, object]:
+def emit_rule_payload(rule: object, target_server: str, timeout: int = 3, *, dns_target_host: str | None = None, dns_target_port_udp: int = 53, dns_target_port_tcp: int = 53) -> dict[str, object]:
     built = build_rule_payload(rule, target_server)
     adapter = built["adapter"]
     payload = built.get("payload", b"") or b""
 
     if built.get("status") == "SKIPPED":
-        return {
-            **built,
-            "bytes_sent": 0,
-            "target_port": None,
-            "emit_error": None,
-        }
+        return {**built, "bytes_sent": 0, "target_port": None, "emit_error": None, "generation_success": False}
 
     if adapter == "http":
         status, _ = send_raw_http_bytes(target_server, payload, timeout=timeout)
-        return {**built, "status": status}
+        return {**built, "status": status, "generation_success": bool(payload)}
 
     unsupported = list(built.get("unsupported_transport_features") or [])
     if unsupported:
@@ -202,17 +182,49 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
             "target_port": None,
             "emit_error": None,
             "unsupported_transport_features": unsupported,
+            "generation_success": False,
         }
 
     if not payload:
         return {
             **built,
             "status": "SKIPPED",
-            "skip_reason": "SKIP_NO_SUPPORTED_TCP_RAW_CLAUSE",
+            "skip_reason": "SKIP_EMPTY_PAYLOAD",
             "bytes_sent": 0,
             "target_port": None,
             "emit_error": None,
+            "generation_success": False,
         }
+
+    if adapter == "dns":
+        transport = str(built.get("transport") or "udp").lower()
+        host = dns_target_host or _target_host_port(target_server, fallback_port=53)[0]
+        fallback = dns_target_port_udp if transport == "udp" else dns_target_port_tcp
+        port_info = _resolve_rule_port(rule, fallback)
+        dst_port = int(port_info["rule_dst_port"])
+        try:
+            sent = send_raw_udp_bytes(host, dst_port, payload, timeout=timeout) if transport == "udp" else send_raw_tcp_bytes(host, dst_port, payload, timeout=timeout)
+            return {
+                **built,
+                "transport": transport,
+                "bytes_sent": sent,
+                "target_host": host,
+                "target_port": dst_port,
+                "emit_error": None,
+                "emit_info": {**port_info, "transport": transport},
+                "generation_success": bool(payload) and sent > 0,
+            }
+        except OSError as exc:
+            return {
+                **built,
+                "transport": transport,
+                "bytes_sent": 0,
+                "target_host": host,
+                "target_port": dst_port,
+                "emit_error": str(exc),
+                "emit_info": {**port_info, "transport": transport},
+                "generation_success": False,
+            }
 
     if adapter == "udp_raw":
         host, fallback_port = _target_host_port(target_server, fallback_port=53)
@@ -220,25 +232,14 @@ def emit_rule_payload(rule: object, target_server: str, timeout: int = 3) -> dic
         dst_port = int(port_info["rule_dst_port"])
         try:
             sent = send_raw_udp_bytes(host, dst_port, payload, timeout=timeout)
-            return {
-                **built,
-                "bytes_sent": sent,
-                "target_port": dst_port,
-                "emit_error": None,
-                "emit_info": port_info,
-            }
+            return {**built, "bytes_sent": sent, "target_port": dst_port, "emit_error": None, "emit_info": port_info, "generation_success": sent > 0}
         except OSError as exc:
-            return {
-                **built,
-                "bytes_sent": 0,
-                "target_port": dst_port,
-                "emit_error": str(exc),
-                "emit_info": port_info,
-            }
+            return {**built, "bytes_sent": 0, "target_port": dst_port, "emit_error": str(exc), "emit_info": port_info, "generation_success": False}
 
     host, fallback_port = _target_host_port(target_server, fallback_port=80)
     port_info = _resolve_rule_port(rule, fallback_port)
     preferred_port = None if bool(port_info["used_fallback"]) else int(port_info["rule_dst_port"])
     segment_payloads = [seg.segment_bytes for seg in built.get("segments", []) if getattr(seg, "segment_bytes", b"")]
     emitted = _emit_tcp_with_retry(host, preferred_port, fallback_port, payload, timeout, segment_payloads=segment_payloads or None)
-    return {**built, **emitted, "emit_info": port_info}
+    generation_success = bool(payload) and int(emitted.get("bytes_sent") or 0) > 0 and not emitted.get("emit_error")
+    return {**built, **emitted, "emit_info": port_info, "generation_success": generation_success}

@@ -11,6 +11,8 @@ from core.models import (
     BufferSwitch,
     ContentMatch,
     DSizeMatch,
+    DnsOpcodeMatch,
+    DnsRrtypeMatch,
     FlowTerm,
     IsDataAtMatch,
     PcreMatch,
@@ -83,6 +85,22 @@ STICKY_BUFFER_KEYWORDS = {
     "http_response_body": "http.response_body",
 }
 
+DNS_STICKY_BUFFER_KEYWORDS = {
+    "dns.query": "dns.query",
+    "dns_query": "dns.query",
+    "dns.queries.rrname": "dns.queries.rrname",
+    "dns.answers.rrname": "dns.answers.rrname",
+    "dns.response.rrname": "dns.response.rrname",
+    "dns.authorities.rrname": "dns.authorities.rrname",
+    "dns.additionals.rrname": "dns.additionals.rrname",
+}
+
+DNS_VALUE_KEYWORDS = {
+    "dns.opcode",
+    "dns.rrtype",
+    "dns.rcode",
+}
+
 LEGACY_BUFFER_MODIFIERS = {
     "http_method": "http.method",
     "http_uri": "http.uri",
@@ -116,6 +134,8 @@ SUPPORTED_KEYWORDS = {
     "header_lowercase", "to_lowercase",
     "urilen", "url_decode",
     *STICKY_BUFFER_KEYWORDS.keys(),
+    *DNS_STICKY_BUFFER_KEYWORDS.keys(),
+    *DNS_VALUE_KEYWORDS,
     *LEGACY_BUFFER_MODIFIERS.keys(),
 }
 
@@ -293,6 +313,8 @@ def _build_rule_ast(raw_rule: object, raw_text: str) -> Rule:
             ast.pcre.append(PcreMatch(raw=value, negated=negated, buffer=None))
         elif keyword in STICKY_BUFFER_KEYWORDS and settings is None:
             ast.sticky_buffers.append(STICKY_BUFFER_KEYWORDS[keyword])
+        elif keyword in DNS_STICKY_BUFFER_KEYWORDS:
+            ast.sticky_buffers.append(DNS_STICKY_BUFFER_KEYWORDS[keyword])
         elif keyword in LEGACY_BUFFER_MODIFIERS:
             ast.legacy_modifiers.append(LEGACY_BUFFER_MODIFIERS[keyword])
 
@@ -348,6 +370,11 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             body.clauses.append(bs)
             last_buffer_switch = bs
             continue
+        if k in DNS_STICKY_BUFFER_KEYWORDS:
+            bs = BufferSwitch(buffer=DNS_STICKY_BUFFER_KEYWORDS[k])
+            body.clauses.append(bs)
+            last_buffer_switch = bs
+            continue
         if k == "header_lowercase":
             if last_buffer_switch is not None and "header_lowercase" not in last_buffer_switch.transforms:
                 last_buffer_switch.transforms.append("header_lowercase")
@@ -378,6 +405,15 @@ def ast_to_suricata_rule(ast: Rule) -> SuricataRule:
             continue
         if k == "bsize" and v is not None:
             body.clauses.append(parse_bsize(v))
+            continue
+        if k == "dns.opcode" and v is not None:
+            try:
+                body.clauses.append(DnsOpcodeMatch(opcode=int(str(v).strip())))
+            except Exception:
+                pass
+            continue
+        if k == "dns.rrtype" and v is not None:
+            body.clauses.append(DnsRrtypeMatch(rrtype=str(v).strip()))
             continue
         if k == "nocase":
             if last_mod_target == "content" and last_content is not None:
