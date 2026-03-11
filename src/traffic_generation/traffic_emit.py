@@ -88,3 +88,15 @@ def send_raw_http_bytes(server: str, raw_bytes: bytes, timeout: int = 3) -> Tupl
             pass
 
     return status, data
+
+
+def send_raw_tcp_bytes(host: str, port: int, payload: bytes, timeout: int = 3) -> int:
+    with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+        sock.sendall(payload)
+    return len(payload)
+
+
+def send_raw_udp_bytes(host: str, port: int, payload: bytes, timeout: int = 3) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        return sock.sendto(payload, (host, int(port)))
