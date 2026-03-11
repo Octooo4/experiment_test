@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import random
 import shutil
 import subprocess
 import time
@@ -281,8 +282,6 @@ def build_rule_plan(rule, rule_ast: Rule) -> dict[str, Any]:
     }
 
 
-
-
 def normalize_rule_for_suricata_eval(rule_text: str) -> str:
     """
     归一化 rule header，避免对 HOME_NET/EXTERNAL_NET/HTTP_PORTS 变量配置强依赖。
@@ -298,6 +297,7 @@ def normalize_rule_for_suricata_eval(rule_text: str) -> str:
     normalized = f"{action} {protocol} any any {direction} any any ("
     return normalized + text[m.end():]
 
+
 def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     sid_dir = root / f"{sid}_{index:05d}"
     sid_dir.mkdir(parents=True, exist_ok=True)
@@ -307,10 +307,7 @@ def initialize_artifacts_dir(root: Path, sid: str, index: int) -> Path:
     return sid_dir
 
 
-
-
 def should_try_legacy_fallback(strategy: str) -> bool:
-    # Keep plan path primary, but allow one legacy retry for all known HTTP build strategies.
     return strategy in {"sticky", "recoverable_raw", "raw_text"}
 
 
@@ -337,8 +334,6 @@ def build_fallback_attempts(rule, target_server: str) -> list[tuple[str, bytes]]
             return
         attempts.append((name, payload))
 
-    # 1) Plan-aligned bucket synthesis as first fallback candidate, useful for many
-    # host/uri sticky misses that got classified into raw_text paths.
     try:
         buckets = split_clauses_for_http_generation(rule.body.clauses)
         if not buckets.get("_mapping_suspect"):
@@ -348,12 +343,9 @@ def build_fallback_attempts(rule, target_server: str) -> list[tuple[str, bytes]]
     except Exception:
         pass
 
-    # 2) Existing strategy-selected legacy builder.
     strategy, req_obj, raw_bytes = build_request_for_rule(rule, target_server)
     add_attempt(strategy, _render_fallback_bytes(req_obj, raw_bytes))
 
-    # 3) Force recoverable/raw builders regardless of strategy to avoid
-    # single-path raw_text misses.
     try:
         raw_req = build_http_request_from_raw_clauses(rule.body.clauses, sid=rule.body.sid)
         ensure_common_headers(target_server, raw_req)
@@ -400,6 +392,16 @@ def run_fallback_attempts(
             break
     return hit, produced_eve_path, status_code, solver_backend
 
+
+def log_rule_result(index: int, total: int, result: ValidationResult) -> None:
+    console(
+        f"[{index}/{total}] sid={result.sid} "
+        f"traffic_type={result.traffic_type or 'unknown'} "
+        f"generation_success={result.generation_success} "
+        f"status={result.status}"
+    )
+
+
 def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: int) -> ValidationResult:
     sid = safe_sid(rule_ast.sid)
     msg = rule_ast.msg or ""
@@ -424,6 +426,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     tx_plan_obj = extract_http_plan(rule)
     adapter = choose_rule_adapter(rule)
     traffic_type = "http" if adapter == "http" else ("udp" if adapter == "udp_raw" else "tcp")
+    console(f"[{index}/{total}] sid={sid} traffic_type={traffic_type}")
+
     write_json(plan_path, plan)
 
     unsupported_features: list[str] = []
@@ -442,6 +446,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
             traffic_type=traffic_type,
+            generation_success=False,
         )
         write_json(diagnose_path, {"stage": "filter", "reason": skip_reason, "result": asdict(result)})
         return result
@@ -456,6 +461,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
+            traffic_type=traffic_type,
+            generation_success=False,
         )
         write_json(diagnose_path, {"stage": "extract_plan", "reason": SKIP_UNSUPPORTED_KEYWORD, "result": asdict(result)})
         return result
@@ -470,19 +477,21 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features + plan["unsupported_pcre"],
+            traffic_type=traffic_type,
+            generation_success=False,
         )
         write_json(diagnose_path, {"stage": "solve", "reason": UNSUPPORTED_PCRE, "result": asdict(result)})
         return result
 
     if plan["unsat_reasons"]:
-        # Try legacy/raw fallbacks before declaring UNSAT final. This handles rules
-        # where plan constraints are stricter than what Suricata actually needs.
         capture_proc: Optional[subprocess.Popen] = None
         try:
             status_code = None
             hit = False
             produced_eve_path = eve_path
             solver_backend = None
+            generation_success = False
+
             for fallback_strategy, fb_bytes in build_fallback_attempts(rule, cfg.target_server):
                 if not fb_bytes:
                     continue
@@ -491,6 +500,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 capture_proc = start_capture(cfg, pcap_path)
                 try:
                     status_code, _ = send_raw_http_bytes(cfg.target_server, fb_bytes, timeout=cfg.request_timeout)
+                    generation_success = True
                     time.sleep(cfg.post_request_sleep_seconds)
                 finally:
                     stop_capture(capture_proc)
@@ -498,8 +508,10 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
                 if hit:
                     break
+
             if produced_eve_path.exists():
                 shutil.copy2(produced_eve_path, eve_path)
+
             if hit:
                 result = ValidationResult(
                     sid=sid,
@@ -511,7 +523,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     unsupported_features=unsupported_features,
                     solver_backend=solver_backend,
                     traffic_type=traffic_type,
-                    generation_success=True,
+                    generation_success=generation_success,
                 )
             else:
                 result = ValidationResult(
@@ -525,8 +537,9 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     unsupported_features=unsupported_features,
                     solver_backend=solver_backend,
                     traffic_type=traffic_type,
-                    generation_success=False,
+                    generation_success=generation_success,
                 )
+
             write_json(
                 diagnose_path,
                 {
@@ -550,6 +563,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 pcap_path=str(pcap_path),
                 eve_path=str(eve_path),
                 unsupported_features=unsupported_features,
+                traffic_type=traffic_type,
+                generation_success=False,
             )
             write_json(
                 diagnose_path,
@@ -566,6 +581,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     capture_proc: Optional[subprocess.Popen] = None
     try:
         if adapter != "http":
+            emit_info = {}
             capture_proc = start_capture(cfg, pcap_path)
             try:
                 emit_info = emit_rule_payload(rule, cfg.target_server, timeout=int(cfg.request_timeout))
@@ -681,6 +697,8 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             pcap_path=str(pcap_path),
             eve_path=str(eve_path),
             unsupported_features=unsupported_features,
+            traffic_type=traffic_type if 'traffic_type' in locals() else None,
+            generation_success=False,
         )
         write_json(diagnose_path, {"stage": "exception", "error": message, "result": asdict(result)})
         return result
@@ -701,18 +719,78 @@ def main() -> None:
     results: list[ValidationResult] = []
     for idx, rule_ast in enumerate(selected, start=1):
         console("=" * 80)
-        results.append(process_one_rule(cfg, rule_ast, idx, total))
+        result = process_one_rule(cfg, rule_ast, idx, total)
+        results.append(result)
+        log_rule_result(idx, total, result)
 
     summary = {
         "total": total,
         "pass": sum(1 for x in results if x.status == "PASS"),
         "skipped": sum(1 for x in results if x.status == "SKIPPED"),
         "miss": sum(1 for x in results if x.status == "MISS"),
+        "generation_success": sum(1 for x in results if x.generation_success is True),
+        "generation_failed": sum(1 for x in results if x.generation_success is False),
         "results": [asdict(r) for r in results],
     }
     write_json(cfg.output_root / "results.json", summary)
-    console(f"Done. pass={summary['pass']} skipped={summary['skipped']} miss={summary['miss']}")
+    console(
+        f"Done. pass={summary['pass']} skipped={summary['skipped']} "
+        f"miss={summary['miss']} gen_ok={summary['generation_success']} "
+        f"gen_fail={summary['generation_failed']}"
+    )
 
 
 if __name__ == "__main__":
-    main()
+    cfg = ValidationConfig(
+        dataset_path=Path(r"E:\Develop\devpy\experiment\resources\dataset\converted_emerging-all_http_tcp_udp.rules"),
+        target_server="http://192.168.1.199:80",
+        output_root=Path(r"E:\Develop\devpy\experiment\resources\validation_run"),
+        dumpcap_exe=Path(r"E:\Wireshark\dumpcap.exe"),
+        capture_interface=r"\Device\NPF_{A4219C22-46C9-47A5-A0BD-50DC4B06644A}",
+        suricata_exe=Path(r"C:\Program Files\Suricata\suricata.exe"),
+        suricata_yaml=Path(r"C:\Program Files\Suricata\suricata.yaml"),
+        capinfos_exe=Path(r"E:\Wireshark\capinfos.exe"),
+        max_rules=100,
+        request_timeout=3.0,
+        capture_settle_seconds=1.0,
+        post_request_sleep_seconds=2.0,
+    )
+
+    validate_inputs(cfg)
+    cfg.output_root.mkdir(parents=True, exist_ok=True)
+
+    parsed_rules = parse_rules(cfg.dataset_path)
+    if not parsed_rules:
+        raise ValueError("No valid rules found in dataset")
+
+    if cfg.max_rules > 0:
+        sample_size = min(cfg.max_rules, len(parsed_rules))
+        selected = random.sample(parsed_rules, sample_size)
+    else:
+        selected = parsed_rules
+
+    total = len(selected)
+
+    console(f"Pipeline starts. total={total}")
+    results: list[ValidationResult] = []
+    for idx, rule_ast in enumerate(selected, start=1):
+        console("=" * 80)
+        result = process_one_rule(cfg, rule_ast, idx, total)
+        results.append(result)
+        log_rule_result(idx, total, result)
+
+    summary = {
+        "total": total,
+        "pass": sum(1 for x in results if x.status == "PASS"),
+        "skipped": sum(1 for x in results if x.status == "SKIPPED"),
+        "miss": sum(1 for x in results if x.status == "MISS"),
+        "generation_success": sum(1 for x in results if x.generation_success is True),
+        "generation_failed": sum(1 for x in results if x.generation_success is False),
+        "results": [asdict(r) for r in results],
+    }
+    write_json(cfg.output_root / "results.json", summary)
+    console(
+        f"Done. pass={summary['pass']} skipped={summary['skipped']} "
+        f"miss={summary['miss']} gen_ok={summary['generation_success']} "
+        f"gen_fail={summary['generation_failed']}"
+    )
