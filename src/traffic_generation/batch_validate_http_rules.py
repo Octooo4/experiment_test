@@ -428,7 +428,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
 
     plan = build_rule_plan(rule, rule_ast)
     adapter = choose_rule_adapter(rule)
-    traffic_type = "http" if adapter == "http" else ("udp" if adapter == "udp_raw" else "tcp")
+    traffic_type = "http" if adapter == "http" else ("dns" if adapter == "dns" else ("udp" if adapter == "udp_raw" else "tcp"))
     console(f"[{index}/{total}] sid={sid} traffic_type={traffic_type}")
 
     write_json(plan_path, plan)
@@ -606,7 +606,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             bytes_sent = int(emit_info.get("bytes_sent") or 0)
             payload = emit_info.get("payload") or b""
             generation_success = bool(payload) and bytes_sent > 0 and not emit_error and not skipped
-            status = "SKIPPED" if skipped else ("PASS" if hit else "MISS")
+            status = "SKIPPED" if skipped else ("HIT" if hit else "MISS")
             miss_reason = None
             if status == "MISS":
                 miss_reason = EMIT_FAILED if emit_error else NO_ALERT_FOR_SID
@@ -633,6 +633,11 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     "hit": hit,
                     "warnings": emit_info.get("warnings") or [],
                     "target_port": emit_info.get("target_port"),
+                    "transport": emit_info.get("transport"),
+                    "qname": emit_info.get("qname"),
+                    "qtype": emit_info.get("qtype"),
+                    "opcode": emit_info.get("opcode"),
+                    "unsupported_dns_features": emit_info.get("unsupported_dns_features") or [],
                     "bytes_sent": bytes_sent,
                     "emit_error": emit_error,
                     "generation_success_basis": {

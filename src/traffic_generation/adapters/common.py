@@ -4,12 +4,20 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
-AdapterKind = Literal["http", "tcp_raw", "udp_raw"]
+AdapterKind = Literal["http", "dns", "tcp_raw", "udp_raw", "unsupported"]
 
 HTTP_STICKY_PREFIX = "http."
+DNS_STICKY_PREFIX = "dns."
+DNS_STICKY_BUFFERS = {
+    "dns.query",
+    "dns_query",
+    "dns.queries.rrname",
+    "dns.answers.rrname",
+    "dns.response.rrname",
+    "dns.authorities.rrname",
+    "dns.additionals.rrname",
+}
 
-# NOTE: This set marks features the current raw TCP/UDP generator cannot satisfy.
-# It is intentionally conservative and is not full Suricata semantic coverage.
 UNSUPPORTED_TRANSPORT_KEYWORDS = {
     "flowbits",
     "flowint",
@@ -50,8 +58,14 @@ def has_http_sticky_buffers(rule: object) -> bool:
         buf = getattr(c, "buffer", None)
         if isinstance(buf, str) and buf.startswith(HTTP_STICKY_PREFIX):
             return True
-        sticky = getattr(c, "buffer", None)
-        if isinstance(sticky, str) and sticky.startswith(HTTP_STICKY_PREFIX):
+    return False
+
+
+def has_dns_sticky_buffers(rule: object) -> bool:
+    clauses = getattr(getattr(rule, "body", None), "clauses", []) or []
+    for c in clauses:
+        buf = getattr(c, "buffer", None)
+        if isinstance(buf, str) and (buf.startswith(DNS_STICKY_PREFIX) or buf in DNS_STICKY_BUFFERS):
             return True
     return False
 

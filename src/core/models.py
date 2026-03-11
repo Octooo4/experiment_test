@@ -2,53 +2,6 @@ from __future__ import annotations
 from typing import List, Optional, Union, Literal, Dict
 from pydantic import BaseModel, Field, model_validator
 
-# —— 你只做 HTTP 请求时，先覆盖这些 buffer 就够用
-HttpBufferLiteral = Literal[
-    # fallback
-    "pkt",
-    "pkt_data",
-
-    # request line / uri
-    "http.method",
-    "http.uri",
-    "http.uri.raw",
-    "http.request_line",
-    "http.protocol",
-    "http.start",
-
-    # generic headers
-    "http.header",
-    "http.header.raw",
-    "http.header_names",
-
-    # named headers
-    "http.host",
-    "http.host.raw",
-    "http.user_agent",
-    "http.referer",
-    "http.referer.raw",
-    "http.accept",
-    "http.accept_lang",
-    "http.accept_enc",
-    "http.connection",
-    "http.content_type",
-    "http.content_len",
-    "http.cookie",
-    "http.cookie.raw",
-
-    # bodies
-    "http.request_body",
-    "http.response_body",
-
-    # response line / status
-    "http.stat_code",
-    "http.stat_msg",
-    "http.response_line",
-
-    # file/body-like
-    "file.data",
-]
-
 Transform = Literal[
     "to_lowercase",
     "header_lowercase",
@@ -56,7 +9,7 @@ Transform = Literal[
 
 class BufferSwitch(BaseModel):
     """sticky buffer：切换后续匹配作用域"""
-    buffer: HttpBufferLiteral
+    buffer: str
     transforms: List[Transform] = Field(default_factory=list)
 
 class FlowTerm(BaseModel):
@@ -68,19 +21,17 @@ class ContentMatch(BaseModel):
     raw: str
     decoded: str
     negated: bool = False
-    # legacy modifier (http_uri/http_header...) may bind buffer to this specific content
-    buffer: Optional[HttpBufferLiteral] = None
+    # legacy modifier may bind buffer to this specific content
+    buffer: Optional[str] = None
 
     nocase: bool = False
     fast_pattern: bool = False
 
-    # absolute modifiers
     offset: Optional[int] = None
     depth: Optional[int] = None
     startswith: bool = False
     endswith: bool = False
 
-    # relative modifiers (relative to previous content match)
     distance: Optional[int] = None
     within: Optional[int] = None
 
@@ -96,8 +47,7 @@ class PcreMatch(BaseModel):
     raw: str
     negated: bool = False
     nocase: bool = False
-    # legacy content modifier 也可能只修饰前一个 pcre
-    buffer: Optional[HttpBufferLiteral] = None
+    buffer: Optional[str] = None
 
 class IsDataAtMatch(BaseModel):
     offset: int
@@ -115,8 +65,14 @@ class BSizeMatch(BaseModel):
     a: int = 0
     b: Optional[int] = None
 
+class DnsOpcodeMatch(BaseModel):
+    opcode: int
+
+class DnsRrtypeMatch(BaseModel):
+    rrtype: str
+
 class ReferenceItem(BaseModel):
-    kind: str   # url/cve/...
+    kind: str
     value: str
 
 Clause = Union[
@@ -126,6 +82,8 @@ Clause = Union[
     IsDataAtMatch,
     DSizeMatch,
     BSizeMatch,
+    DnsOpcodeMatch,
+    DnsRrtypeMatch,
 ]
 
 class RuleHeader(BaseModel):
@@ -141,13 +99,8 @@ class RuleBody(BaseModel):
     msg: str = ""
     sid: str = ""
     rev: str = ""
-
-    # 关键：顺序语句流
     clauses: List[Clause] = Field(default_factory=list)
-
     flow: Optional[FlowTerm] = None
-
-    # 可选保留（不影响匹配语义，但用于标注/回显）
     references: List[ReferenceItem] = Field(default_factory=list)
     metadata: Dict[str, str] = Field(default_factory=dict)
 
