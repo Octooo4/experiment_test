@@ -25,7 +25,8 @@ from traffic_generation.rule_semantics import (
     classify_http_rule_strategy,
     extract_header_candidates_from_raw_clauses,
 )
-from traffic_generation.traffic_emit import send_http_request, send_raw_http_bytes
+from traffic_generation.traffic_emit import send_http_request, send_raw_http_bytes, send_raw_tcp_bytes, send_raw_udp_bytes
+from traffic_generation.validate.batch_validate_rules import build_rule_payload, choose_rule_adapter, emit_rule_payload
 
 __all__ = [
     "HttpRequestSpec",
@@ -52,4 +53,9 @@ __all__ = [
     "build_transaction_artifacts_for_rule",
     "send_http_request",
     "send_raw_http_bytes",
+    "send_raw_tcp_bytes",
+    "send_raw_udp_bytes",
+    "choose_rule_adapter",
+    "build_rule_payload",
+    "emit_rule_payload",
 ]
