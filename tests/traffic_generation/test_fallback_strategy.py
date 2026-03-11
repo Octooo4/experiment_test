@@ -1,4 +1,4 @@
-from traffic_generation.batch_validate_http_rules import should_try_legacy_fallback
+from traffic_generation.batch_validate_http_rules import should_short_circuit_unsat, should_try_legacy_fallback
 from types import SimpleNamespace
 
 from traffic_generation.batch_validate_http_rules import build_fallback_attempts
@@ -52,3 +52,10 @@ def test_build_fallback_attempts_expands_for_sticky(monkeypatch):
         ("sticky", b"A"),
         ("raw_text", b"C"),
     ]
+
+
+def test_should_short_circuit_unsat_http_only():
+    assert should_short_circuit_unsat("http", ["x"]) is True
+    assert should_short_circuit_unsat("tcp_raw", ["x"]) is False
+    assert should_short_circuit_unsat("udp_raw", ["x"]) is False
+    assert should_short_circuit_unsat("http", []) is False

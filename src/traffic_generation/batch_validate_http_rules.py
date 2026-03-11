@@ -311,6 +311,10 @@ def should_try_legacy_fallback(strategy: str) -> bool:
     return strategy in {"sticky", "recoverable_raw", "raw_text"}
 
 
+def should_short_circuit_unsat(adapter: str, unsat_reasons: list[str]) -> bool:
+    return adapter == "http" and bool(unsat_reasons)
+
+
 def _render_fallback_bytes(req_obj, raw_bytes: Optional[bytes]) -> bytes:
     if req_obj is not None:
         return render_http_request(req_obj).encode("latin-1", errors="replace")
@@ -423,7 +427,6 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
     rule_path.write_text(normalized_rule_text.strip() + "\n", encoding="utf-8")
 
     plan = build_rule_plan(rule, rule_ast)
-    tx_plan_obj = extract_http_plan(rule)
     adapter = choose_rule_adapter(rule)
     traffic_type = "http" if adapter == "http" else ("udp" if adapter == "udp_raw" else "tcp")
     console(f"[{index}/{total}] sid={sid} traffic_type={traffic_type}")
@@ -483,7 +486,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
         write_json(diagnose_path, {"stage": "solve", "reason": UNSUPPORTED_PCRE, "result": asdict(result)})
         return result
 
-    if plan["unsat_reasons"]:
+    if should_short_circuit_unsat(adapter, plan["unsat_reasons"]):
         capture_proc: Optional[subprocess.Popen] = None
         try:
             status_code = None
@@ -620,6 +623,7 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
             )
             return result
 
+        tx_plan_obj = extract_http_plan(rule)
         default_host = cfg.target_server.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0] or "example.com"
         request_bytes = build_request(tx_plan_obj, default_host=default_host)
         solver_backend = "plan"
