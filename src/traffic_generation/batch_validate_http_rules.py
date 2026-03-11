@@ -594,23 +594,36 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                 stop_capture(capture_proc)
                 capture_proc = None
 
-            hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
-            if produced_eve_path.exists():
-                shutil.copy2(produced_eve_path, eve_path)
+            skipped = emit_info.get("status") == "SKIPPED"
+            produced_eve_path = eve_path
+            hit = False
+            if not skipped:
+                hit, produced_eve_path = run_suricata_verify(cfg, pcap_path, rule_path, sid_dir / "suricata_out")
+                if produced_eve_path.exists():
+                    shutil.copy2(produced_eve_path, eve_path)
 
             emit_error = emit_info.get("emit_error")
+            bytes_sent = int(emit_info.get("bytes_sent") or 0)
+            payload = emit_info.get("payload") or b""
+            generation_success = bool(payload) and bytes_sent > 0 and not emit_error and not skipped
+            status = "SKIPPED" if skipped else ("PASS" if hit else "MISS")
+            miss_reason = None
+            if status == "MISS":
+                miss_reason = EMIT_FAILED if emit_error else NO_ALERT_FOR_SID
+
             result = ValidationResult(
                 sid=sid,
                 msg=msg,
-                status="PASS" if hit else "MISS",
-                miss_reason=None if hit else (EMIT_FAILED if emit_error else NO_ALERT_FOR_SID),
+                status=status,
+                skip_reason=emit_info.get("skip_reason") if skipped else None,
+                miss_reason=miss_reason,
                 request_path=str(req_path),
                 pcap_path=str(pcap_path),
                 eve_path=str(eve_path),
-                unsupported_features=unsupported_features,
+                unsupported_features=unsupported_features + list(emit_info.get("unsupported_transport_features") or []),
                 solver_backend=adapter,
                 traffic_type=traffic_type,
-                generation_success=bool(emit_info.get("payload")),
+                generation_success=generation_success,
             )
             write_json(
                 diagnose_path,
@@ -618,6 +631,17 @@ def process_one_rule(cfg: ValidationConfig, rule_ast: Rule, index: int, total: i
                     "stage": "complete",
                     "adapter": adapter,
                     "hit": hit,
+                    "warnings": emit_info.get("warnings") or [],
+                    "target_port": emit_info.get("target_port"),
+                    "bytes_sent": bytes_sent,
+                    "emit_error": emit_error,
+                    "generation_success_basis": {
+                        "payload_non_empty": bool(payload),
+                        "bytes_sent_gt_zero": bytes_sent > 0,
+                        "emit_error_absent": not bool(emit_error),
+                        "not_skipped": not skipped,
+                    },
+                    "generation_success": generation_success,
                     "emit_info": emit_info,
                     "result": asdict(result),
                 },
