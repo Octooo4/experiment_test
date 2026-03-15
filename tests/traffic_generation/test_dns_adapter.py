@@ -34,3 +34,20 @@ def test_dns_response_rule_skips():
     out = build_dns_for_rule(r)
     assert out["status"] == "SKIPPED"
     assert out["skip_reason"] == "SKIP_DNS_RESPONSE_NOT_SUPPORTED"
+
+
+def test_dns_rule_honors_legacy_clause_buffer_without_sticky_switch():
+    r = _rule(protocol="udp", clauses=[ContentMatch(raw="google.com", decoded="google.com", buffer="dns.query")])
+    out = build_dns_for_rule(r)
+    assert out["adapter"] == "dns"
+    assert out["payload"]
+    assert out["qname"] == "google.com"
+
+
+def test_dns_rule_keeps_tcp_transport_and_adds_length_prefix():
+    r = _rule(protocol="tcp", clauses=[BufferSwitch(buffer="dns.query"), ContentMatch(raw="example.com", decoded="example.com")])
+    out = build_dns_for_rule(r)
+    assert out["transport"] == "tcp"
+    assert out["payload"]
+    wire_len = int.from_bytes(out["payload"][:2], "big")
+    assert wire_len == len(out["payload"]) - 2

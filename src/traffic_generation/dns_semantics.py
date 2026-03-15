@@ -41,7 +41,9 @@ def _rrtype_from_value(v: str) -> str:
 
 
 def extract_dns_plan(rule: object) -> DnsTransactionPlan:
-    plan = DnsTransactionPlan(transport="udp")
+    protocol = str(getattr(getattr(rule, "header", None), "protocol", "") or "").strip().lower()
+    transport = "tcp" if protocol == "tcp" else "udp"
+    plan = DnsTransactionPlan(transport=transport)
     clauses = getattr(getattr(rule, "body", None), "clauses", []) or []
     flow = getattr(getattr(rule, "body", None), "flow", None)
     if flow is not None and bool(getattr(flow, "to_client", False)):
@@ -65,7 +67,12 @@ def extract_dns_plan(rule: object) -> DnsTransactionPlan:
             plan.rrtype = _rrtype_from_value(str(clause.rrtype))
             continue
 
-        if isinstance(clause, ContentMatch) and active_buffer in QUERY_BUFFERS:
+        clause_buffer = str(getattr(clause, "buffer", "") or "")
+        effective_buffer = active_buffer
+        if clause_buffer in QUERY_BUFFERS | RESPONSE_ONLY_BUFFERS:
+            effective_buffer = clause_buffer
+
+        if isinstance(clause, ContentMatch) and effective_buffer in QUERY_BUFFERS:
             if clause.negated:
                 plan.warnings.append("negated dns qname content not supported in V1")
                 continue
@@ -76,22 +83,28 @@ def extract_dns_plan(rule: object) -> DnsTransactionPlan:
             else:
                 m = "contains"
             plan.qname_constraints.append(
-                DnsQuestionConstraint(match_type=m, value=clause.decoded, nocase=bool(clause.nocase), source_buffer=active_buffer)
+                DnsQuestionConstraint(match_type=m, value=clause.decoded, nocase=bool(clause.nocase), source_buffer=effective_buffer)
             )
             continue
 
-        if isinstance(clause, PcreMatch) and active_buffer in QUERY_BUFFERS:
+        if isinstance(clause, PcreMatch) and effective_buffer in QUERY_BUFFERS:
             if clause.negated:
                 plan.warnings.append("negated dns qname pcre not supported in V1")
                 continue
             plan.qname_constraints.append(
-                DnsQuestionConstraint(match_type="pcre", value=clause.raw, nocase=bool(clause.nocase), source_buffer=active_buffer)
+                DnsQuestionConstraint(match_type="pcre", value=clause.raw, nocase=bool(clause.nocase), source_buffer=effective_buffer)
             )
+
+        if isinstance(clause, (ContentMatch, PcreMatch)) and effective_buffer in RESPONSE_ONLY_BUFFERS:
+            plan.unsupported_dns_features.append(effective_buffer)
 
     if len([c for c in plan.qname_constraints if c.match_type != "pcre"]) > 1:
         plan.warnings.append("multiple qname constraints detected; builder uses first feasible one")
 
     if any(f in plan.unsupported_dns_features for f in RESPONSE_ONLY_BUFFERS):
         plan.direction = "response"
+
+    # de-duplicate while preserving order for diagnostics
+    plan.unsupported_dns_features = list(dict.fromkeys(plan.unsupported_dns_features))
 
     return plan
